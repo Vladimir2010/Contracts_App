@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific data (SENSITIVE)
+*.xlsx
+*.doc
+*.docx
+LD/data/
+*.db
+*.sqlite
+
+# Debug/Temporary files
+LD/tr_dump.html
+LD/*.txt
+LD/*.json
+!LD/bg_places_flat.json
+final_final_verification.txt
+final_verification.txt
+debug_*.txt
+test_output.*
