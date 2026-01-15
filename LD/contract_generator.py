@@ -150,180 +150,135 @@ def clean_numeric(val):
         return s[:-2]
     return s
 
+def format_phone_custom(phone):
+    """Format phone as 0888/728-005 or 02/870-5657"""
+    if not phone: return ""
+    digits = re.sub(r'\D', '', str(phone))
+    if not digits: return str(phone)
+    
+    # 0888728005 -> 0888/728-005
+    if len(digits) == 10 and digits.startswith('08'):
+        return f"{digits[:4]}/{digits[4:7]}-{digits[7:]}"
+    # 028705657 -> 02/870-5657
+    if len(digits) == 9 and digits.startswith('02'):
+        return f"{digits[:2]}/{digits[2:5]}-{digits[5:]}"
+    # Fallback for other formats
+    if len(digits) > 6:
+        return f"{digits[:-6]}/{digits[-6:-3]}-{digits[-3:]}"
+    return str(phone)
+
+def format_date_bg(dt, fmt_type='A'):
+    """
+    fmt_type A: 15/01/26 г.
+    fmt_type B: 15 януари 2026 г.
+    fmt_type C: четвъртък, 15 януари 2026 г.
+    fmt_type D: 15.01.2027 г. (for device list)
+    """
+    if not dt or not isinstance(dt, datetime):
+        return ""
+    
+    days = ["понеделник", "вторник", "сряда", "четвъртък", "петък", "събота", "неделя"]
+    months = ["януари", "февруари", "март", "април", "май", "юни", 
+              "юли", "август", "септември", "октомври", "ноември", "декември"]
+    
+    if fmt_type == 'A':
+        return dt.strftime('%d/%m/%y г.')
+    elif fmt_type == 'B':
+        return f"{dt.day} {months[dt.month - 1]} {dt.year} г."
+    elif fmt_type == 'C':
+        return f"{days[dt.weekday()]}, {dt.day} {months[dt.month - 1]} {dt.year} г."
+    elif fmt_type == 'D':
+        return dt.strftime('%d.%m.%Y г.')
+    return dt.strftime('%d.%m.%Y')
+
 def generate_service_contract(client_data: Dict[str, Any], devices: List[Dict[str, Any]], template_path: str, output_dir: str) -> str:
     """
-    Generate a service contract from a template.
-    Surgical version using exact template strings.
+    Generate service contract using strict {1}-{51} placeholder mapping.
     """
     if not os.path.exists(template_path):
-        raise FileNotFoundError(f"Template НЕ е намерен: {template_path}")
-
-    # Handle legacy .doc format
-    is_temp_docx = False
-    temp_docx_path = None
-    if template_path.lower().endswith('.doc') and not template_path.lower().endswith('.docx'):
-        try:
-            temp_docx_path = doc_to_docx(template_path)
-            template_path = temp_docx_path
-            is_temp_docx = True
-        except Exception as e:
-            raise Exception(f"Грешка при работа с .doc файла. Детайли: {str(e)}")
+        # Check root directory as fallback
+        root_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), template_path)
+        if os.path.exists(root_path):
+            template_path = root_path
+        else:
+            raise FileNotFoundError(f"Template НЕ е намерен: {template_path}")
 
     doc = Document(template_path)
     
-    # Data Preparation
-    c_num = clean_xml_string(client_data.get('contract_number', ''))
-    c_name = clean_xml_string(client_data.get('company_name', ''))
-    mol = clean_xml_string(client_data.get('mol', ''))
-    eik_pure = clean_numeric(client_data.get('eik', ''))
-    
-    is_vat = str(client_data.get('vat_registered', '')).lower() == 'да'
-    vat_prefix = "BG" if is_vat else ""
-    eik_with_vat = f"{vat_prefix}{eik_pure}"
-    
     now = datetime.now()
-    date_str = now.strftime('%d.%m.%Y')
-    date_long = format_date_long_bg(now)
+    # Contract start date as datetime object for comparison
+    start_date_str = client_data.get('contract_start', '')
+    try:
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d')
+    except:
+        start_date = now
 
-    # 1. SPECIAL CASE: The header on Page 1 (P2)
-    # Paragraph: № (номер на догово ДНЕШНА ДАТА)/кт: (ИМЕ къ към Договор...
-    for para in doc.paragraphs:
-        p_text = para.text
-        if "номер на догово" in p_text and "ДНЕШНА ДАТА" in p_text:
-            # We search for the specific parenthesis string
-            # It might looks like (номер на догово ДНЕШНА ДАТА)
-            combined_ph = "(номер на догово ДНЕШНА ДАТА)"
-            if combined_ph in p_text:
-                replace_text_all(doc, combined_ph, f"{c_num} {date_str}")
-            else:
-                # Fallback: just replace substrings
-                replace_text_all(doc, "номер на догово", c_num)
-                replace_text_all(doc, "ДНЕШНА ДАТА", date_str)
-
-        if "(ИМЕ къ" in p_text:
-             replace_text_all(doc, "(ИМЕ къ", f"({c_name}")
-        if "(ИМЕ)" in p_text:
-             replace_text_all(doc, "(ИМЕ)", c_name)
-
-    # 2. SPECIAL CASE: EIK / BULSTAT (P4)
-    # Placeholder: (РЕГИСТРАЦИЯ ПО ЗДДС АКО ИМА СЕ ПИШЕ BG ИЛИ НИЩО и ЕИК)
-    vat_ph = "(РЕГИСТРАЦИЯ ПО ЗДДС АКО ИМА СЕ ПИШЕ BG ИЛИ НИЩО и ЕИК)"
-    replace_text_all(doc, vat_ph, eik_with_vat)
-
-    # 3. GLOBAL ROBUST MAPPINGS
-    global_mappings = [
-        ("(номер на договор)", c_num),
-        ("(НОМЕР НА ДОГОВОР)", c_num),
-        ("(номер на дог)", c_num),
-        ("(ДОГ НОМ)", c_num),
-        ("(ДОГ НОМЕР)", c_num),
-        ("(ДОГ. НОМ)", c_num),
-        ("(ДОГ.НОМ)", c_num),
-        ("(ДАТА)", date_str),
-        ("(ДНЕШНА ДАТА)", date_str),
-        ("(ДАТА НА ИЗДАВАНЕ)", date_str),
-        ("(дата)", date_str),
-        ("(ДАТА: НЕДЕЛЯ,11.ЯНУАРИ.2026 г.)", date_long),
-        ("(ИМЕ НА ФИРМА)", c_name),
-        ("(ИМЕ НА ФИРМАТА)", c_name),
-        ("(име на фирма във формат: „името“ ЕООД/ООД/)", c_name),
-        ("„името“ ЕООД/ООД/", c_name),
-        ("(АКО ИМА ЗДДС СЕ ПИШЕ BG ИНАЧЕ НИЩО)", vat_prefix),
-        ("(ЕИК)", eik_with_vat),
-        ("(БУЛСТАТ)", eik_with_vat),
-        ("(МОЛ)", mol),
-        ("(мол)", mol),
-        ("(ТЕЛЕФОН)", clean_xml_string(client_data.get('phone1', ''))),
-        ("(АДРЕС НА ФИРМАТА)", clean_xml_string(client_data.get('address', ''))),
-        ("Приложение № 1/(дата)/", f"Приложение № 1/{date_str}/"),
-        ("Приложение № 2 /(ДАТА)/", f"Приложение № 2 /{date_str}/"),
-        ("(ДАТА НА ИЗТИЧАНЕ)", date_str), # Placeholder for expiry
-    ]
+    # Basic data
+    c_num = str(client_data.get('contract_number', ''))
+    c_name = str(client_data.get('company_name', ''))
+    c_addr = str(client_data.get('address', ''))
+    mol = str(client_data.get('mol', ''))
+    eik_pure = clean_numeric(client_data.get('eik', ''))
+    is_vat = str(client_data.get('vat_registered', '')).lower() == 'да'
+    eik_val = f"BG{eik_pure}" if is_vat else eik_pure
     
-    for ph, val in global_mappings:
-        replace_text_all(doc, ph, val)
+    mappings = {
+        "{1}": c_num,
+        "{2}": format_date_bg(now, 'A'),
+        "{3}": c_name,
+        "{4}": c_addr,
+        "{5}": eik_val,
+        "{6}": format_phone_custom(client_data.get('phone1', '')),
+        "{7}": mol,
+        "{8}": format_date_bg(now, 'B'),
+        "{9}": c_num,
+        "{10}": format_date_bg(now, 'A'),
+        "{46}": format_date_bg(now, 'B'),
+        "{47}": c_num,
+        "{48}": format_date_bg(now, 'A'),
+        "{49}": format_date_bg(now, 'C'),
+        "{50}": "Г" if start_date.date() == now.date() else "А"
+    }
 
-    # 4. Device Slots (Annex 1)
+    # Device Mapping (11-45, grouped by 7 fields per device)
     for i in range(5):
+        base_idx = 11 + (i * 7)
         if i < len(devices):
             dev = devices[i]
-            obj_name = clean_xml_string(dev.get('object_name', ''))
-            obj_addr = clean_xml_string(dev.get('object_address', ''))
-            obj_phone = clean_xml_string(dev.get('object_phone', ''))
-            model = clean_xml_string(dev.get('model', ''))
-            sn = clean_numeric(dev.get('serial_number', ''))
-            fm = clean_numeric(dev.get('fiscal_memory', ''))
-            
-            replace_text_once(doc, "(ИМЕ НА ОБЕКТ)", obj_name)
-            replace_text_once(doc, "(АДРЕС НА ОБЕКТ)", obj_addr)
-            replace_text_once(doc, "(ТЕЛЕФОН)", obj_phone)
-            replace_text_once(doc, "(МОЛ)", mol)
-            replace_text_once(doc, f"{i+1}.(МОДЕЛ)", model)
-            replace_text_once(doc, "(МОДЕЛ)", model)
-            replace_text_once(doc, "(СЕРИЕН НОМ)", sn)
-            replace_text_once(doc, "(ФП НОМЕР)", fm)
+            mappings[f"{{{base_idx}}}"] = str(dev.get('object_name', ''))
+            mappings[f"{{{base_idx+1}}}"] = str(dev.get('object_address', ''))
+            mappings[f"{{{base_idx+2}}}"] = format_phone_custom(dev.get('object_phone', ''))
+            mappings[f"{{{base_idx+3}}}"] = mol
+            mappings[f"{{{base_idx+4}}}"] = str(dev.get('model', ''))
+            mappings[f"{{{base_idx+5}}}"] = clean_numeric(dev.get('serial_number', ''))
+            mappings[f"{{{base_idx+6}}}"] = clean_numeric(dev.get('fiscal_memory', ''))
         else:
-            # Clear slot
-            slots = ["(ИМЕ НА ОБЕКТ)", "(АДРЕС НА ОБЕКТ)", "(ТЕЛЕФОН)", "(МОЛ)", 
-                     f"{i+1}.(МОДЕЛ)", "(МОДЕЛ)", "(СЕРИЕН НОМ)", "(ФП НОМЕР)"]
-            for ph in slots:
-                replace_text_once(doc, ph, "")
+            for j in range(7):
+                mappings[f"{{{base_idx+j}}}"] = ""
 
-    # 5. Handle Expiry Date in Annex 2
-    if devices:
-        expiry = str(devices[0].get('contract_expiry', ''))
-        if expiry:
-            try:
-                dt_exp = datetime.strptime(expiry, '%Y-%m-%d')
-                exp_str = dt_exp.strftime('%d.%m.%Y')
-                replace_text_all(doc, "(ДАТА НА ИЗТИЧАНЕ)", exp_str)
-                replace_text_all(doc, "(дата на изтичане на договора)", exp_str)
-            except: pass
-
-    # 6. ULTRASAFE CLEANUP
-    # We ONLY remove things that are in ALL-CAPS or match known placeholder keywords.
-    # We DO NOT touch lowercase words like (дванадесет) or phrases in parentheses.
-    # We also avoid deleting (дванадесет) specifically.
+    # {51} - Device list with expiry dates
+    device_list_entries = []
+    for i, dev in enumerate(devices):
+        expiry_str = str(dev.get('contract_expiry', ''))
+        expiry_formatted = ""
+        try:
+            exp_date = datetime.strptime(expiry_str, '%Y-%m-%d')
+            expiry_formatted = format_date_bg(exp_date, 'D')
+        except:
+            expiry_formatted = expiry_str
+        
+        device_list_entries.append(f"ЕКА No {i+1} до {expiry_formatted}")
     
-    def safe_re_cleanup(text):
-        # Find all content in parentheses
-        matches = re.finditer(r"\((.*?)\)", text)
-        result = text
-        for match in matches:
-            content = match.group(1)
-            # If content is EMPTY, we leave it? No, if it was () we probably replaced it.
-            # If content contains lowercase letters (except for specific short words like 'кт'), we assume it's legitimate text.
-            # (дванадесет) has only lowercase.
-            if any(c.islower() for c in content) and len(content) > 3:
-                continue
-            
-            # If it's all caps or contains keywords, it's a placeholder
-            keywords = ["ДОГ", "ДАТА", "НОМ", "ИМЕ", "ЕИК", "БУЛСТАТ", "МОЛ", "ТЕЛЕФОН", "ОБЕКТ", "АДРЕС", "МОДЕЛ", "ФП"]
-            if any(kw in content.upper() for kw in keywords) or content.isupper():
-                result = result.replace(match.group(0), "")
-        return result
+    mappings["{51}"] = ", ".join(device_list_entries)
 
-    for para in doc.paragraphs:
-        if "(" in para.text and ")" in para.text:
-            fixed = safe_re_cleanup(para.text)
-            if fixed != para.text:
-                para.text = fixed
-                
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for para in cell.paragraphs:
-                    fixed = safe_re_cleanup(para.text)
-                    if fixed != para.text:
-                        para.text = fixed
+    # Perform replacements
+    for ph, val in mappings.items():
+        replace_text_all(doc, ph, clean_xml_string(val))
 
-    # Save and Cleanup
+    # Save
     safe_company = "".join([c for c in c_name if c.isalnum() or c in (' ', '-', '_')]).strip()
     output_filename = f"{c_num} {safe_company}.docx"
     output_path = os.path.join(output_dir, output_filename)
     
     doc.save(output_path)
-    if is_temp_docx and temp_docx_path and os.path.exists(temp_docx_path):
-        try: os.remove(temp_docx_path)
-        except: pass
     return output_path

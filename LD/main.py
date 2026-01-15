@@ -475,17 +475,18 @@ class MainWindow(QMainWindow):
             if not save_dir:
                 return
 
-            template_path = "1 Профинанс Д и Д ЕООД.doc"
+            template_path = "1 Профинанс Д и Д ЕООД.docx"
             
             # Use generator
             from contract_generator import generate_service_contract
             output_file = generate_service_contract(client_data, devices, template_path, save_dir)
             
-            QMessageBox.information(self, "Успех", f"Договорът беше генериран успешно:\n{output_file}")
-            
-            # Open the folder
-            if os.path.exists(save_dir):
-                os.startfile(save_dir)
+            # Open the file
+            if os.path.exists(output_file):
+                os.startfile(output_file)
+                self.statusBar.showMessage(f"Договорът е генериран: {os.path.basename(output_file)}", 5000)
+            else:
+                QMessageBox.information(self, "Успех", f"Договорът беше генериран успешно:\n{output_file}")
 
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при генериране на договор: {str(e)}")
