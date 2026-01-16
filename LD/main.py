@@ -4,23 +4,82 @@ import os
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
     QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QLineEdit,
-    QCheckBox, QMessageBox, QFileDialog, QStatusBar, QMenu, QToolBar
+    QCheckBox, QMessageBox, QFileDialog, QStatusBar, QMenu, QToolBar,
+    QSplashScreen, QProgressBar, QLabel, QToolButton
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtCore import Qt, QTimer, QSize
+from PyQt6.QtGui import QAction, QIcon, QPixmap
 
 from database import (
     init_db, get_all_devices, search_devices, delete_device,
     get_client_by_contract, get_devices_by_contract
 )
-from contract_generator import generate_service_contract
+from contract_generator import generate_service_contract, generate_nap_xml
 from dialogs import (
     AddDeviceDialog, EditDeviceDialog, AddToExistingContractDialog,
-    ExpiringContractsDialog
+    ExpiringContractsDialog, SettingsDialog
 )
 from importer import import_contracts_simple
 from bim_loader import load_certificates_safe
 from date_utils import format_date_bg
+from path_utils import get_resource_path
+
+class SplashScreen(QSplashScreen):
+    def __init__(self):
+        # Create a background pixmap (canvas)
+        canvas_width = 700
+        canvas_height = 500
+        pixmap = QPixmap(canvas_width, canvas_height)
+        pixmap.fill(Qt.GlobalColor.white)
+        
+        super().__init__(pixmap)
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
+        
+        # Paths to images safely via utility
+        logo_path = get_resource_path('logo-d-d.jpg')
+        
+        # Title Label
+        self.titleLabel = QLabel("Регистър на\nфискални устройства", self)
+        self.titleLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.titleLabel.setStyleSheet("font-size: 32px; font-weight: bold; color: #2c3e50; margin-top: 20px;")
+        self.titleLabel.setGeometry(0, 30, canvas_width, 100)
+        
+        # Logo Label
+        self.logoLabel = QLabel(self)
+        if os.path.exists(logo_path):
+            original_pixmap = QPixmap(logo_path)
+            scaled_logo = original_pixmap.scaled(350, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.logoLabel.setPixmap(scaled_logo)
+            self.logoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Center the logo in the middle of the remaining space
+            logo_x = (canvas_width - scaled_logo.width()) // 2
+            logo_y = 150 # Starting after title
+            self.logoLabel.setGeometry(logo_x, logo_y, scaled_logo.width(), scaled_logo.height())
+        
+        # Layout for progress bar
+        self.progressBar = QProgressBar(self)
+        self.progressBar.setGeometry(40, canvas_height - 60, canvas_width - 80, 25)
+        self.progressBar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.progressBar.setStyleSheet("""
+            QProgressBar {
+                background-color: #ecf0f1;
+                color: #2c3e50;
+                border: 1px solid #bdc3c7;
+                border-radius: 12px;
+                text-align: center;
+                font-weight: bold;
+            }
+            QProgressBar::chunk {
+                background-color: #3498db;
+                border-radius: 10px;
+            }
+        """)
+        self.progressBar.setValue(0)
+
+    def setProgress(self, value):
+        self.progressBar.setValue(value)
+        # Force UI update
+        QApplication.processEvents()
 
 
 class MainWindow(QMainWindow):
@@ -90,60 +149,93 @@ class MainWindow(QMainWindow):
         self.refresh_table()
     
     def create_toolbar(self):
-        """Create application toolbar"""
+        """Create application toolbar with themed dropdown menus"""
         toolbar = QToolBar("Главна лента")
         toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(32, 32))
         self.addToolBar(toolbar)
         
-        # Add device
+        # Tools Group: Устройства
+        btn_devices = QToolButton()
+        btn_devices.setText("Устройства")
+        btn_devices.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_devices = QMenu(self)
+        
         action_add = QAction("➕ Ново устройство", self)
         action_add.triggered.connect(self.add_device)
-        toolbar.addAction(action_add)
+        menu_devices.addAction(action_add)
         
-        # Add to existing contract
         action_add_existing = QAction("➕ Към съществуващ договор", self)
         action_add_existing.triggered.connect(self.add_to_existing_contract)
-        toolbar.addAction(action_add_existing)
+        menu_devices.addAction(action_add_existing)
         
-        toolbar.addSeparator()
+        menu_devices.addSeparator()
         
-        # Edit
         action_edit = QAction("✏️ Редактиране", self)
         action_edit.triggered.connect(self.edit_selected_device)
-        toolbar.addAction(action_edit)
-
-        # Generate Contract
-        action_contract = QAction("📜 Издай договор", self)
-        action_contract.triggered.connect(self.generate_selected_contract)
-        toolbar.addAction(action_contract)
+        menu_devices.addAction(action_edit)
         
-        # Delete
         action_delete = QAction("🗑️ Изтриване", self)
         action_delete.triggered.connect(self.delete_selected_device)
-        toolbar.addAction(action_delete)
+        menu_devices.addAction(action_delete)
+        
+        btn_devices.setMenu(menu_devices)
+        toolbar.addWidget(btn_devices)
         
         toolbar.addSeparator()
         
-        # Expiring contracts
+        # Tools Group: Документи
+        btn_docs = QToolButton()
+        btn_docs.setText("Документи")
+        btn_docs.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_docs = QMenu(self)
+        
+        action_contract = QAction("📜 Издай договор", self)
+        action_contract.triggered.connect(self.generate_selected_contract)
+        menu_docs.addAction(action_contract)
+        
+        action_fiscal = QAction("⚙️ Заявка Фиск.", self)
+        action_fiscal.triggered.connect(self.open_fiscalization_request)
+        menu_docs.addAction(action_fiscal)
+        
+        menu_docs.addSeparator()
+        
+        action_cert = QAction("📝 Свидетелство", self)
+        action_cert.triggered.connect(self.generate_selected_certificate)
+        menu_docs.addAction(action_cert)
+        
+        action_dereg = QAction("📋 Дерегистрация", self)
+        action_dereg.triggered.connect(self.generate_deregistration_action)
+        menu_docs.addAction(action_dereg)
+        
+        btn_docs.setMenu(menu_docs)
+        toolbar.addWidget(btn_docs)
+        
+        toolbar.addSeparator()
+        
+        # Tools Group: Справки
+        btn_reports = QToolButton()
+        btn_reports.setText("Справки")
+        btn_reports.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_reports = QMenu(self)
+        
         action_expiring = QAction("📄 Изтичащи договори", self)
         action_expiring.triggered.connect(self.show_expiring_contracts)
-        toolbar.addAction(action_expiring)
+        menu_reports.addAction(action_expiring)
+        
+        btn_reports.setMenu(menu_reports)
+        toolbar.addWidget(btn_reports)
         
         toolbar.addSeparator()
         
-        # Import from Excel
-        action_import = QAction("📥 Импорт от Excel", self)
-        action_import.triggered.connect(self.import_from_excel)
-        toolbar.addAction(action_import)
-        
-        # Load certificates
-        action_load_certs = QAction("📋 Зареди сертификати", self)
-        action_load_certs.triggered.connect(self.load_certificates)
-        toolbar.addAction(action_load_certs)
+        # Standalone: Настройки
+        action_settings = QAction("🛠️ Настройки", self)
+        action_settings.triggered.connect(self.show_settings)
+        toolbar.addAction(action_settings)
         
         toolbar.addSeparator()
         
-        # Refresh
+        # Standalone: Обнови
         action_refresh = QAction("🔄 Обнови", self)
         action_refresh.triggered.connect(self.refresh_table)
         toolbar.addAction(action_refresh)
@@ -362,6 +454,13 @@ class MainWindow(QMainWindow):
         # Original actions
         edit_action = menu.addAction("✏️ Редактиране")
         contract_action = menu.addAction("📜 Издай договор")
+        menu.addSeparator()
+        cert_action = menu.addAction("📝 Издай свидетелство")
+        dereg_action = menu.addAction("📋 Протокол дерегистрация")
+        menu.addSeparator()
+        menu.addSeparator()
+        nap_action = menu.addAction("📡 Направи файл за НАП")
+        menu.addSeparator()
         delete_action = menu.addAction("🗑️ Изтриване")
         
         menu.addSeparator()
@@ -376,12 +475,173 @@ class MainWindow(QMainWindow):
             self.edit_selected_device()
         elif action == contract_action:
             self.generate_selected_contract()
+        elif action == cert_action:
+            self.generate_selected_certificate()
+        elif action == dereg_action:
+            self.generate_deregistration_action()
+        elif action == nap_action:
+            self.generate_nap_file()
         elif action == delete_action:
             self.delete_selected_device()
         elif action == copy_cell_action:
             self.copy_cell_to_clipboard(index.row(), index.column())
         elif action == copy_row_action:
             self.copy_row_to_clipboard(index.row())
+
+    def choose_format_and_open(self, docx_path):
+        """Ask user if they want to open DOCX or PDF and handle conversion"""
+        if not docx_path or not os.path.exists(docx_path):
+            return
+            
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Question)
+        msg.setWindowTitle("Избор на формат")
+        msg.setText("В какъв формат искате да отворите документа?")
+        docx_btn = msg.addButton("Word (DOCX)", QMessageBox.ButtonRole.ActionRole)
+        pdf_btn = msg.addButton("PDF", QMessageBox.ButtonRole.ActionRole)
+        cancel_btn = msg.addButton("Отказ", QMessageBox.ButtonRole.RejectRole)
+        
+        msg.exec()
+        
+        if msg.clickedButton() == docx_btn:
+            os.startfile(docx_path)
+        elif msg.clickedButton() == pdf_btn:
+            from contract_generator import docx_to_pdf
+            self.statusBar.showMessage("Конвертиране в PDF...")
+            pdf_path = docx_to_pdf(docx_path)
+            if pdf_path:
+                os.startfile(pdf_path)
+                self.statusBar.showMessage(f"PDF е готов: {pdf_path}", 3000)
+            else:
+                QMessageBox.critical(self, "Грешка", "Неуспешно конвертиране в PDF. Опитайте с Word.")
+                os.startfile(docx_path)
+
+    def generate_selected_certificate(self):
+        """Generate certificate for selected device"""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "Внимание", "Моля, изберете устройство!")
+            return
+            
+        row = selected_rows[0].row()
+        item = self.table.item(row, 0)
+        device_id = item.data(Qt.ItemDataRole.UserRole)
+        
+        from database import get_device_full
+        from contract_generator import generate_registration_certificate
+        
+        full_data = get_device_full(device_id)
+        if not full_data: return
+        
+        # Map DB fields to what generator expects
+        client_data = full_data 
+        device = full_data
+        device['bim_number'] = full_data.get('certificate_number', '')
+        
+        try:
+            template = "RegCert_DY432051.docx"
+            output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Generated")
+            if not os.path.exists(output_dir): os.makedirs(output_dir)
+            
+            out_path = generate_registration_certificate(client_data, device, template, output_dir)
+            self.statusBar.showMessage("Свидетелството е генерирано")
+            self.choose_format_and_open(out_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{e}")
+
+    def generate_nap_file(self):
+        """Generate NAP XML for selected device and service technician from settings"""
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Грешка", "Моля, изберете ред от таблицата.")
+            return
+
+        # Load Settings
+        settings_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "settings.json")
+        if not os.path.exists(settings_path):
+            QMessageBox.warning(self, "Внимание", "Моля, първо попълнете данните за сервизния техник в Настройки!")
+            return
+            
+        import json
+        try:
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                service_data = json.load(f)
+        except:
+            QMessageBox.critical(self, "Грешка", "Неуспешно зареждане на настройките.")
+            return
+
+        if not service_data.get('tech_egn'):
+            QMessageBox.warning(self, "Внимание", "Липсват данни за техник в настройките (ЕГН).")
+            return
+
+        # Data from Table (ID is in column 0, hidden)
+        device_id = int(self.table.item(row, 0).text())
+        
+        from database import get_device_full
+        full_data = get_device_full(device_id)
+        
+        if not full_data:
+            QMessageBox.critical(self, "Грешка", "Неуспешно намиране на данните за устройството.")
+            return
+
+        from contract_generator import clean_numeric
+        client_eik = clean_numeric(full_data.get('eik', ''))
+        fdrid = clean_numeric(full_data.get('fdrid', ''))
+
+        from path_utils import get_app_root
+        output_dir = os.path.join(get_app_root(), "Generated")
+        os.makedirs(output_dir, exist_ok=True)
+
+        try:
+            xml_path = generate_nap_xml(service_data, client_eik, fdrid, output_dir)
+            
+            QMessageBox.information(self, "Успех", f"XML файлът за НАП е генериран:\n{os.path.basename(xml_path)}")
+            
+            # Open the folder or file
+            os.startfile(output_dir)
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при генериране на XML:\n{e}")
+
+    def generate_deregistration_action(self):
+        """Open dialog and generate deregistration protocol"""
+        selected_rows = self.table.selectionModel().selectedRows()
+        device_id = None
+        device_data = None
+        
+        if selected_rows:
+            row = selected_rows[0].row()
+            item = self.table.item(row, 0)
+            device_id = item.data(Qt.ItemDataRole.UserRole)
+            from database import get_device_full
+            device_data = get_device_full(device_id)
+            if device_data:
+                device_data['bim_number'] = device_data.get('certificate_number', '')
+
+        from dialogs import DeregistrationDialog
+        dialog = DeregistrationDialog(self, device_data)
+        if dialog.exec():
+            data = dialog.get_data()
+            from contract_generator import generate_deregistration_protocol
+            try:
+                template = "DeregProtocol_DT123456.docx"
+                from path_utils import get_app_root
+                output_dir = os.path.join(get_app_root(), "Generated")
+                if not os.path.exists(output_dir): os.makedirs(output_dir)
+                
+                out_path = generate_deregistration_protocol(data, template, output_dir)
+                self.statusBar.showMessage("Протоколът за дерегистрация е генериран")
+                self.choose_format_and_open(out_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{e}")
+
+    def open_fiscalization_request(self):
+        """Open the 'Заявка за фискализация.docx' template"""
+        from path_utils import get_resource_path
+        f_path = get_resource_path("Заявка за фискализация.docx")
+        if os.path.exists(f_path):
+            os.startfile(f_path)
+        else:
+            QMessageBox.critical(self, "Грешка", f"Файлът не е намерен:\n{f_path}")
 
     def copy_cell_to_clipboard(self, row, col):
         """Copy single cell text to clipboard"""
@@ -419,17 +679,21 @@ class MainWindow(QMainWindow):
         
         if filename:
             reply = QMessageBox.question(
-                self,
-                "Потвърждение",
-                "Импортът ще добави данните от файла в базата данни.\nПродължаване?",
+                self, "Потвърждение",
+                "Сигурни ли сте, че искате да импортирате данни? Съществуващите записи могат да бъдат дублирани.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             
             if reply == QMessageBox.StandardButton.Yes:
                 self.statusBar.showMessage("Импортиране...")
-                result = import_contracts_simple(filename)
-                QMessageBox.information(self, "Импорт", result)
+                count = import_contracts_simple(filename)
                 self.refresh_table()
+                QMessageBox.information(self, "Успех", f"Импортирани са {count} записа.")
+
+    def show_settings(self):
+        """Show settings dialog"""
+        dialog = SettingsDialog(self)
+        dialog.exec()
     
     def load_certificates(self):
         """Load certificates from BIM Excel file"""
@@ -493,20 +757,42 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # Create application
+    app = QApplication(sys.argv)
+    
+    # Set application-wide icon
+    icon_path = get_resource_path('vladpos_logo.png')
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    
+    # Show Splash Screen
+    splash = SplashScreen()
+    splash.show()
+    
+    # Simulate loading process while initializing
+    # In a real app, this would happen during data loading
+    for i in range(1, 101):
+        splash.setProgress(i)
+        splash.showMessage(f"Зареждане на компоненти... {i}%", 
+                          Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignCenter, 
+                          Qt.GlobalColor.white)
+        import time
+        time.sleep(0.02) # Simulating weight
+    
     # Ensure data directory exists
     os.makedirs("data", exist_ok=True)
     
     # Initialize database
     init_db()
     
-    # Create application
-    app = QApplication(sys.argv)
-    
     # Set application style
     app.setStyle('Fusion')
     
     # Create and show main window
     window = MainWindow()
+    
+    # Close splash and show main window
+    splash.finish(window)
     window.show()
     
     sys.exit(app.exec())

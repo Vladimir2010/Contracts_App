@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="WINDOWS-1251"?>
+<dec44a2 xmlns="http://inetdec.nra.bg/xsd/dec_44a2.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" schemaLocation="http://inetdec.nra.bg/xsd/dec_44a2.xsd http://inetdec.nra.bg/xsd/dec_44a2.xsd">
+  <name>ПРОФИНАНС Д И Д ЕООД</name>
+  <bulstat>206335057</bulstat>
+  <telcode>0888728005</telcode>
+  <telnum>028705657</telnum>
+  <authorizeid>7910089140</authorizeid>
+  <autorizecode>1</autorizecode>
+  <fname>Росен</fname>
+  <sname>Георгиев</sname>
+  <tname>Иванов</tname>
+  <id>202120872</id>
+  <code>5</code>
+  <fuiasutd>
+    <rowenum>
+      <fdrid>4852302</fdrid>
+    </rowenum>
+  </fuiasutd>
+</dec44a2>

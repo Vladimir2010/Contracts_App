@@ -191,17 +191,118 @@ def format_date_bg(dt, fmt_type='A'):
         return dt.strftime('%d.%m.%Y г.')
     return dt.strftime('%d.%m.%Y')
 
+def docx_to_pdf(docx_path):
+    """Convert .docx to .pdf using pywin32"""
+    import win32com.client
+    import pythoncom
+    
+    pythoncom.CoInitialize()
+    word = None
+    doc = None
+    try:
+        word = win32com.client.DispatchEx("Word.Application")
+        word.Visible = False
+        
+        docx_path = os.path.abspath(docx_path)
+        pdf_path = docx_path.rsplit('.', 1)[0] + ".pdf"
+        
+        doc = word.Documents.Open(docx_path, ReadOnly=True)
+        # wdFormatPDF = 17
+        doc.SaveAs2(pdf_path, FileFormat=17)
+        doc.Close(False)
+        return pdf_path
+    except Exception as e:
+        print(f"Error converting to PDF: {e}")
+        return None
+    finally:
+        if word: word.Quit()
+        pythoncom.CoUninitialize()
+
+def number_to_words_bg(amount, currency="BGN"):
+    """
+    Convert number to Bulgarian words for currency amounts.
+    Handle BGN (лева/стотинки) and EUR (евро/цента).
+    """
+    if amount is None or amount == "": return ""
+    try:
+        amount = float(amount)
+    except:
+        return str(amount)
+
+    units = ["", "един", "два", "три", "четири", "пет", "шест", "седем", "осем", "девет"]
+    units_fem = ["", "една", "две", "три", "четири", "пет", "шест", "седем", "осем", "девет"]
+    teens = ["десет", "единадесет", "дванадесет", "тринадесет", "четиринадесет", "петнадесет", "шестнадесет", "седемнадесет", "осемнадесет", "деветнадесет"]
+    tens = ["", "десет", "двадесет", "тридесет", "четиридесет", "петдесет", "шестдесет", "седемдесет", "осемдесет", "деветдесет"]
+    hundreds = ["", "сто", "двеста", "триста", "четиристотин", "петстотин", "шестстотин", "седемстотин", "осемстотин", "деветстотин"]
+
+    def convert_chunk(num, gender='masc'):
+        res = []
+        h = num // 100
+        t = (num % 100) // 10
+        u = num % 10
+        
+        if h > 0: res.append(hundreds[h])
+        
+        target_units = units_fem if gender == 'fem' else units
+        
+        if t == 1:
+            if h > 0: res.append("и")
+            res.append(teens[u])
+        else:
+            if t > 0:
+                if h > 0: res.append("и")
+                res.append(tens[t])
+                if u > 0:
+                    res.append("и")
+                    res.append(target_units[u])
+            elif u > 0:
+                if h > 0: res.append("и")
+                res.append(target_units[u])
+        return " ".join(res)
+
+    integer_part = int(amount)
+    fraction_part = round((amount - integer_part) * 100)
+
+    # Simplified Bulgarian word conversion for amounts
+    parts = []
+    
+    # Millions
+    mil = integer_part // 1000000
+    if mil > 0:
+        if mil == 1: parts.append("един милион")
+        else: parts.append(convert_chunk(mil, 'masc') + " милиона")
+    
+    # Thousands
+    thousands = (integer_part % 1000000) // 1000
+    if thousands > 0:
+        if thousands == 1: parts.append("хиляда")
+        else: parts.append(convert_chunk(thousands, 'fem') + " хиляди")
+        
+    # Basics
+    rest = integer_part % 1000
+    if rest > 0 or not parts:
+        if parts and rest < 100: parts.append("и")
+        parts.append(convert_chunk(rest, 'masc'))
+
+    words = " ".join(parts).strip()
+    
+    if currency == "BGN":
+        main_unit = "лев" if integer_part == 1 else "лева"
+        frac_unit = "стотинка" if fraction_part == 1 else "стотинки"
+        return f"{words} {main_unit} и {fraction_part:02d} {frac_unit}"
+    else: # EUR
+        main_unit = "евро"
+        frac_unit = "цента"
+        return f"{words} {main_unit} и {fraction_part:02d} {frac_unit}"
+
 def generate_service_contract(client_data: Dict[str, Any], devices: List[Dict[str, Any]], template_path: str, output_dir: str) -> str:
     """
     Generate service contract using strict {1}-{51} placeholder mapping.
     """
+    from path_utils import get_resource_path
+    template_path = get_resource_path(template_path)
     if not os.path.exists(template_path):
-        # Check root directory as fallback
-        root_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), template_path)
-        if os.path.exists(root_path):
-            template_path = root_path
-        else:
-            raise FileNotFoundError(f"Template НЕ е намерен: {template_path}")
+        raise FileNotFoundError(f"Template НЕ е намерен: {template_path}")
 
     doc = Document(template_path)
     
@@ -282,3 +383,200 @@ def generate_service_contract(client_data: Dict[str, Any], devices: List[Dict[st
     
     doc.save(output_path)
     return output_path
+
+def generate_registration_certificate(client_data, device, template_path, output_dir):
+    """Generate RegCert_SN.docx from template"""
+    from path_utils import get_resource_path
+    template_path = get_resource_path(template_path)
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"Template НЕ е намерен: {template_path}")
+
+    doc = Document(template_path)
+    now = datetime.now()
+    
+    sn = clean_numeric(device.get('serial_number', ''))
+    
+    # 1 - 15/01/2025г.
+    # 12 - 15/01/2025 г.
+    date_f1 = now.strftime('%d/%m/%Yг.')
+    date_f12 = now.strftime('%d/%m/%Y г.')
+    
+    c_start = client_data.get('contract_start', '')
+    try:
+        dt_start = datetime.strptime(c_start, '%Y-%m-%d')
+        start_fmt = dt_start.strftime('%d.%m.%Y г.')
+    except:
+        start_fmt = str(c_start)
+
+    mappings = {
+        "{1}": date_f1,
+        "{2}": clean_numeric(client_data.get('eik', '')),
+        "{3}": str(client_data.get('company_name', '')),
+        "{4}": str(client_data.get('address', '')),
+        "{5}": str(client_data.get('mol', '')),
+        "{6}": f"{device.get('object_name', '')}, {device.get('object_address', '')}",
+        "{7}": str(device.get('model', '')),
+        "{8}": str(device.get('bim_number', '')),
+        "{9}": sn,
+        "{10}": clean_numeric(device.get('fiscal_memory', '')),
+        "{11}": str(client_data.get('contract_number', '')),
+        "{12}": date_f12,
+        "{13}": clean_numeric(device.get('fdrid', '')),
+        "{14}": start_fmt
+    }
+    
+    for ph, val in mappings.items():
+        replace_text_all(doc, ph, clean_xml_string(val))
+        
+    output_filename = f"RegCert_{sn}.docx"
+    output_path = os.path.join(output_dir, output_filename)
+    doc.save(output_path)
+    return output_path
+
+def generate_deregistration_protocol(proto_data, template_path, output_dir):
+    """Generate DeregProtocol_SN.docx from complex proto_data dict"""
+    from path_utils import get_resource_path
+    template_path = get_resource_path(template_path)
+    if not os.path.exists(template_path):
+        raise FileNotFoundError(f"Template НЕ е намерен: {template_path}")
+
+    doc = Document(template_path)
+    
+    # Manufacturers Data
+    # DY -> Daisy ("Дейзи Тех" АД ЕИК - 201679556)
+    # DT -> Datecs ( "Датекс" ООД ЕИК - 000713391)
+    # ZK / TR -> Tremol ("Тремол" ООД ЕИК - 104593442)
+    sn = str(proto_data.get('serial_number', ''))
+    manu_sel = proto_data.get('manufacturer', '')
+    manu_name = ""
+    manu_eik = ""
+    manu_city = ""
+    
+    if manu_sel == "Дейзи" or (not manu_sel and (sn.startswith('DY') or sn.startswith('SY'))):
+        manu_name = '"Дейзи Тех" АД'
+        manu_eik = "201679556"
+        manu_city = "София"
+    elif manu_sel == "Датекс" or (not manu_sel and sn.startswith('DT')):
+        manu_name = '"Датекс" ООД'
+        manu_eik = "000713391"
+        manu_city = "София"
+    elif manu_sel == "Тремол" or (not manu_sel and (sn.startswith('ZK') or sn.startswith('TR') or sn.startswith('TE'))):
+        manu_name = '"Тремол" ООД'
+        manu_eik = "104593442"
+        manu_city = "Велико Търново"
+        
+    now = datetime.now()
+    curr_label = "лв." if proto_data.get('currency', 'BGN') == 'BGN' else "€"
+    
+    def fmt_amt(val):
+        if not val: return f"0.00 {curr_label}"
+        try:
+            num = float(val)
+            if curr_label == "€": return f"€ {num:.2f}"
+            return f"{num:.2f} лв."
+        except: return str(val)
+
+    # Certificate Expiry Date
+    cert_date = proto_data.get('certificate_expiry', None)
+    bim_no = str(proto_data.get('bim_number', ''))
+    
+    if not cert_date and bim_no:
+        try:
+            from database import get_certificate_expiry
+            cert_date = get_certificate_expiry(bim_no)
+        except: pass
+        
+    date_f8 = ""
+    if cert_date:
+        try:
+            if isinstance(cert_date, str) and '-' in cert_date:
+                dt_cert = datetime.strptime(cert_date, '%Y-%m-%d')
+            elif isinstance(cert_date, str) and '.' in cert_date:
+                dt_cert = datetime.strptime(cert_date, '%d.%m.%Y')
+            else:
+                dt_cert = cert_date # Already a date object?
+            date_f8 = dt_cert.strftime('%d.%m.%Y г.')
+        except:
+            date_f8 = str(cert_date)
+    else:
+        date_f8 = now.strftime('%d.%m.%Y г.') # Fallback
+        
+    mappings = {
+        "{1}": now.strftime('%d.%m.%Y г.'),
+        "{2}": now.strftime('%H:%M'),
+        "{3}": str(proto_data.get('eik', '')),
+        "{4}": f"{proto_data.get('company_name', '')}, {proto_data.get('address', '')}",
+        "{5}": f"{proto_data.get('mol', '')}, {proto_data.get('address', '')}",
+        "{6}": f"{proto_data.get('object_name', '')}, {proto_data.get('object_address', '')}",
+        "{7}": str(proto_data.get('model', '')),
+        "{8}": f"{bim_no} / {date_f8}",
+        "{9}": manu_name,
+        "{10}": manu_eik,
+        "{11}": sn,
+        "{12}": clean_numeric(proto_data.get('fiscal_memory', '')),
+        "{13}": clean_numeric(proto_data.get('fdrid', '')),
+        "{14}": str(proto_data.get('reason', '')),
+        "{15}": proto_data.get('date_start_fmt', ''), 
+        "{16}": proto_data.get('date_stop_fmt', ''),
+        "{17}": fmt_amt(proto_data.get('turnover', 0)),
+        "{18}": number_to_words_bg(proto_data.get('turnover', 0), proto_data.get('currency', 'BGN')),
+        "{19}": fmt_amt(proto_data.get('turnover', 0)),
+        "{20}": fmt_amt(proto_data.get('storno_total', 0)),
+        "{21}": fmt_amt(proto_data.get('vat_a', 0)),
+        "{22}": fmt_amt(proto_data.get('vat_b', 0)),
+        "{23}": fmt_amt(proto_data.get('vat_v', 0)),
+        "{24}": fmt_amt(proto_data.get('vat_g', 0)),
+        "{25}": fmt_amt(proto_data.get('storno_a', 0)),
+        "{26}": fmt_amt(proto_data.get('storno_b', 0)),
+        "{27}": fmt_amt(proto_data.get('storno_v', 0)),
+        "{28}": fmt_amt(proto_data.get('storno_g', 0)),
+        "{29}": f"{manu_name}, гр. {manu_city}",
+        "{30}": f"{proto_data.get('company_name', '')}, гр. София" # Defaulting to Sofia or client city
+    }
+    
+    for ph, val in mappings.items():
+        replace_text_all(doc, ph, clean_xml_string(val))
+        
+    output_filename = f"DeregProtocol_{sn}.docx"
+    output_path = os.path.join(output_dir, output_filename)
+    doc.save(output_path)
+    return output_path
+
+def generate_nap_xml(service_data, client_eik, fdrid, output_dir):
+    """Generate NAP XML file in WINDOWS-1251 encoding"""
+    now = datetime.now()
+    # NAP_YYYYMMDD_HHMMSS.xml
+    timestamp = now.strftime('%Y%m%d_%H%M%S')
+    filename = f"NAP_{timestamp}.xml"
+    output_path = os.path.join(output_dir, filename)
+    
+    # Service Name formatting: Uppercase and no quotes
+    service_name = str(service_data.get('name', '')).replace('"', '').replace("'", "").upper().strip()
+    
+    # Structure from example
+    xml_content = f"""<?xml version="1.0" encoding="WINDOWS-1251"?>
+<dec44a2 xmlns="http://inetdec.nra.bg/xsd/dec_44a2.xsd" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" schemaLocation="http://inetdec.nra.bg/xsd/dec_44a2.xsd http://inetdec.nra.bg/xsd/dec_44a2.xsd">
+  <name>{service_name}</name>
+  <bulstat>{service_data.get('eik', '')}</bulstat>
+  <telcode>{service_data.get('phone1', '')}</telcode>
+  <telnum>{service_data.get('phone2', '')}</telnum>
+  <authorizeid>{service_data.get('tech_egn', '')}</authorizeid>
+  <autorizecode>1</autorizecode>
+  <fname>{clean_xml_string(service_data.get('tech_f', ''))}</fname>
+  <sname>{clean_xml_string(service_data.get('tech_m', ''))}</sname>
+  <tname>{clean_xml_string(service_data.get('tech_l', ''))}</tname>
+  <id>{client_eik}</id>
+  <code>5</code>
+  <fuiasutd>
+    <rowenum>
+      <fdrid>{fdrid}</fdrid>
+    </rowenum>
+  </fuiasutd>
+</dec44a2>"""
+
+    try:
+        with open(output_path, 'wb') as f:
+            f.write(xml_content.encode('windows-1251', errors='replace'))
+        return output_path
+    except Exception as e:
+        raise Exception(f"Грешка при запис на XML: {e}")

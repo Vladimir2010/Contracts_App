@@ -294,6 +294,10 @@ def check_vat(eik: str):
     Check VAT registration using EU VIES SOAP API and enrich with TR data.
     Returns: Dict with valid, name, address, mol, city, postal_code or None
     """
+    # 0. Clean EIK
+    eik = re.sub(r'\D', '', str(eik))
+    if not eik: return None
+    
     # 1. Base structure
     result_data = {"valid": False, "name": "", "address": "", "mol": "", "city": "", "postal_code": ""}
     

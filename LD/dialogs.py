@@ -271,7 +271,8 @@ class AddDeviceDialog(QDialog):
     def setup_autocomplete(self):
         """Setup City and Postal Code autocomplete"""
         try:
-            flat_file = os.path.join(os.path.dirname(__file__), "bg_places_flat.json")
+            from path_utils import get_resource_path
+            flat_file = get_resource_path("LD/bg_places_flat.json")
             if not os.path.exists(flat_file):
                 return
                 
@@ -465,8 +466,9 @@ class AddToExistingContractDialog(QDialog):
         form.addRow("№ Фискална памет:", self.fiscal_memory)
         
         # Connect phone formatting
-        self.phone1.editingFinished.connect(lambda: self.format_phone(self.phone1))
-        self.phone2.editingFinished.connect(lambda: self.format_phone(self.phone2))
+        # These lines are incorrect as self.phone1 and self.phone2 are not attributes of this class
+        # self.phone1.editingFinished.connect(lambda: self.format_phone(self.phone1))
+        # self.phone2.editingFinished.connect(lambda: self.format_phone(self.phone2))
         self.object_phone.editingFinished.connect(lambda: self.format_phone(self.object_phone))
         
         layout.addLayout(form)
@@ -813,7 +815,8 @@ class EditDeviceDialog(QDialog):
     def setup_autocomplete(self):
         """Setup City and Postal Code autocomplete"""
         try:
-            flat_file = os.path.join(os.path.dirname(__file__), "bg_places_flat.json")
+            from path_utils import get_resource_path
+            flat_file = get_resource_path("LD/bg_places_flat.json")
             if not os.path.exists(flat_file): return
             with open(flat_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -1036,3 +1039,342 @@ class ExpiringContractsDialog(QDialog):
                 os.startfile(filename)
             else:
                 QMessageBox.critical(self, "Грешка", "Грешка при експорт!")
+
+class DeregistrationDialog(QDialog):
+    def __init__(self, parent=None, device_data=None):
+        super().__init__(parent)
+        self.device_data = device_data
+        self.setWindowTitle("Данни за Протокол за Дерегистрация")
+        self.setMinimumWidth(600)
+        
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        
+        # Client Info (if not in DB)
+        self.eik_input = QLineEdit()
+        self.company_input = QLineEdit()
+        self.address_input = QLineEdit()
+        self.mol_input = QLineEdit()
+        
+        # Device Info
+        self.model_input = QLineEdit()
+        self.sn_input = QLineEdit()
+        self.fm_input = QLineEdit()
+        self.bim_input = QLineEdit()
+        self.fdrid_input = QLineEdit()
+        self.obj_name_input = QLineEdit()
+        self.obj_addr_input = QLineEdit()
+        
+        # Manufacturer
+        self.manu_combo = QComboBox()
+        self.manu_combo.addItems(["Дейзи", "Датекс", "Тремол"])
+        
+        # Reasons
+        self.reason_combo = QComboBox()
+        self.reason_combo.addItems([
+            "препълване на фискалната памет",
+            "смяна на собственика",
+            "прекратена регистрацията на ФУ по инициатива на търговеца",
+            "бракуване на ФУ",
+            "повреда на фискалната памет, която не позволява разчитането ѝ",
+            "грешка в блок на фискалната памет",
+            "грешка при въвеждане в експлоатация на ФУ"
+        ])
+        
+        # Dates
+        self.date_start = QDateEdit()
+        self.date_start.setCalendarPopup(True)
+        self.date_start.setDate(QDate.currentDate().addYears(-1))
+        
+        self.date_stop = QDateEdit()
+        self.date_stop.setCalendarPopup(True)
+        self.date_stop.setDate(QDate.currentDate())
+        
+        # Turnovers
+        self.turnover_input = QLineEdit("0.00")
+        self.storno_total_input = QLineEdit("0.00")
+        
+        # Currency
+        self.curr_layout = QHBoxLayout()
+        self.bgn_radio = QCheckBox("Лева (лв.)")
+        self.bgn_radio.setChecked(True)
+        self.eur_radio = QCheckBox("Евро (€)")
+        self.curr_layout.addWidget(self.bgn_radio)
+        self.curr_layout.addWidget(self.eur_radio)
+        
+        def on_bgn(state):
+            if state: self.eur_radio.setChecked(False)
+        def on_eur(state):
+            if state: self.bgn_radio.setChecked(False)
+        self.bgn_radio.stateChanged.connect(on_bgn)
+        self.eur_radio.stateChanged.connect(on_eur)
+        
+        # VAT Groups
+        self.vat_a = QLineEdit("0.00")
+        self.vat_b = QLineEdit("0.00")
+        self.vat_v = QLineEdit("0.00")
+        self.vat_g = QLineEdit("0.00")
+        
+        self.storno_a = QLineEdit("0.00")
+        self.storno_b = QLineEdit("0.00")
+        self.storno_v = QLineEdit("0.00")
+        self.storno_g = QLineEdit("0.00")
+        
+        # Form Assembly
+        form.addRow("ЕИК:", self.eik_input)
+        form.addRow("Фирма:", self.company_input)
+        form.addRow("Адрес:", self.address_input)
+        form.addRow("МОЛ:", self.mol_input)
+        form.addRow(QLabel("<b>Информация за устройството</b>"))
+        form.addRow("Модел:", self.model_input)
+        form.addRow("Сериен номер:", self.sn_input)
+        form.addRow("Производител:", self.manu_combo)
+        form.addRow("ФП номер:", self.fm_input)
+        form.addRow("Свидетелство БИМ:", self.bim_input)
+        form.addRow("FDRID:", self.fdrid_input)
+        form.addRow("Обект - Име:", self.obj_name_input)
+        form.addRow("Обект - Адрес:", self.obj_addr_input)
+        form.addRow(QLabel("<b>Финансови данни</b>"))
+        form.addRow("Причина:", self.reason_combo)
+        form.addRow("Валута:", self.curr_layout)
+        form.addRow("Начална дата:", self.date_start)
+        form.addRow("Крайна дата:", self.date_stop)
+        form.addRow("Общ оборот:", self.turnover_input)
+        form.addRow("Общо Сторно:", self.storno_total_input)
+        
+        vat_grid = QHBoxLayout()
+        vat_grid.addWidget(QLabel("ДДС А:"))
+        vat_grid.addWidget(self.vat_a)
+        vat_grid.addWidget(QLabel("ДДС Б:"))
+        vat_grid.addWidget(self.vat_b)
+        vat_grid.addWidget(QLabel("ДДС В:"))
+        vat_grid.addWidget(self.vat_v)
+        vat_grid.addWidget(QLabel("ДДС Г:"))
+        vat_grid.addWidget(self.vat_g)
+        form.addRow("Оборот по групи:", vat_grid)
+        
+        storno_grid = QHBoxLayout()
+        storno_grid.addWidget(QLabel("А:"))
+        storno_grid.addWidget(self.storno_a)
+        storno_grid.addWidget(QLabel("Б:"))
+        storno_grid.addWidget(self.storno_b)
+        storno_grid.addWidget(QLabel("В:"))
+        storno_grid.addWidget(self.storno_v)
+        storno_grid.addWidget(QLabel("Г:"))
+        storno_grid.addWidget(self.storno_g)
+        form.addRow("Сторно по групи:", storno_grid)
+        
+        layout.addLayout(form)
+        
+        # Buttons
+        btns = QHBoxLayout()
+        gen_btn = QPushButton("Генерирай Протокол")
+        gen_btn.clicked.connect(self.accept)
+        cancel_btn = QPushButton("Отказ")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(gen_btn)
+        btns.addWidget(cancel_btn)
+        layout.addLayout(btns)
+        
+        # Pre-fill if exists
+        if device_data:
+            # device_data is usually a dict or object from DB
+            from database import get_client_by_contract
+            client = get_client_by_contract(device_data.get('contract_number', ''))
+            if client:
+                self.eik_input.setText(str(client.get('eik', '')))
+                self.company_input.setText(str(client.get('company_name', '')))
+                self.address_input.setText(str(client.get('address', '')))
+                self.mol_input.setText(str(client.get('mol', '')))
+            
+            self.model_input.setText(str(device_data.get('model', '')))
+            self.sn_input.setText(str(device_data.get('serial_number', '')))
+            self.fm_input.setText(str(device_data.get('fiscal_memory', '')))
+            self.bim_input.setText(str(device_data.get('bim_number', '')))
+            self.fdrid_input.setText(str(device_data.get('fdrid', '')))
+            self.obj_name_input.setText(str(device_data.get('object_name', '')))
+            self.obj_addr_input.setText(str(device_data.get('object_address', '')))
+            self.cert_expiry = device_data.get('certificate_expiry', None)
+            
+            # Pre-select manufacturer
+            sn = str(device_data.get('serial_number', ''))
+            if sn.startswith('DY') or sn.startswith('SY'):
+                self.manu_combo.setCurrentText("Дейзи")
+            elif sn.startswith('DT'):
+                self.manu_combo.setCurrentText("Датекс")
+            elif sn.startswith('ZK') or sn.startswith('TR') or sn.startswith('TE'):
+                self.manu_combo.setCurrentText("Тремол")
+
+    def get_data(self):
+        return {
+            "eik": self.eik_input.text(),
+            "company_name": self.company_input.text(),
+            "address": self.address_input.text(),
+            "mol": self.mol_input.text(),
+            "model": self.model_input.text(),
+            "serial_number": self.sn_input.text(),
+            "fiscal_memory": self.fm_input.text(),
+            "bim_number": self.bim_input.text(),
+            "fdrid": self.fdrid_input.text(),
+            "manufacturer": self.manu_combo.currentText(),
+            "certificate_expiry": getattr(self, 'cert_expiry', None),
+            "object_name": self.obj_name_input.text(),
+            "object_address": self.obj_addr_input.text(),
+            "reason": self.reason_combo.currentText(),
+            "currency": "BGN" if self.bgn_radio.isChecked() else "EUR",
+            "date_start_fmt": self.date_start.date().toString('dd.MM.yyyy г.'),
+            "date_stop_fmt": self.date_stop.date().toString('dd.MM.yyyy г.'),
+            "turnover": self.turnover_input.text(),
+            "storno_total": self.storno_total_input.text(),
+            "vat_a": self.vat_a.text(),
+            "vat_b": self.vat_b.text(),
+            "vat_v": self.vat_v.text(),
+            "vat_g": self.vat_g.text(),
+            "storno_a": self.storno_a.text(),
+            "storno_b": self.storno_b.text(),
+            "storno_v": self.storno_v.text(),
+            "storno_g": self.storno_g.text()
+        }
+
+class SettingsDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Настройки")
+        self.setMinimumSize(500, 450)
+        
+        from path_utils import get_app_root
+        self.settings_file = os.path.join(get_app_root(), "data", "settings.json")
+        os.makedirs(os.path.dirname(self.settings_file), exist_ok=True)
+        
+        layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+        
+        # Tab 1: Service Firm info
+        self.firm_tab = QWidget()
+        firm_layout = QFormLayout(self.firm_tab)
+        
+        self.s_name = QLineEdit()
+        self.s_eik = QLineEdit()
+        self.s_vat = QLineEdit()
+        self.s_city = QLineEdit()
+        self.s_post = QLineEdit()
+        self.s_addr = QLineEdit()
+        self.s_mol = QLineEdit()
+        self.s_phone1 = QLineEdit()
+        self.s_phone2 = QLineEdit()
+        self.s_tech_f = QLineEdit()
+        self.s_tech_m = QLineEdit()
+        self.s_tech_l = QLineEdit()
+        self.s_tech_egn = QLineEdit()
+        
+        check_btn = QPushButton("Провери ЕИК")
+        check_btn.clicked.connect(self.check_service_eik)
+        
+        firm_layout.addRow("ЕИК:", self.s_eik)
+        firm_layout.addRow("", check_btn)
+        firm_layout.addRow("Име на фирма:", self.s_name)
+        firm_layout.addRow("ЗДДС рег.:", self.s_vat)
+        firm_layout.addRow("Град:", self.s_city)
+        firm_layout.addRow("Пощ. код:", self.s_post)
+        firm_layout.addRow("Адрес:", self.s_addr)
+        firm_layout.addRow("МОЛ:", self.s_mol)
+        firm_layout.addRow("Телефон 1:", self.s_phone1)
+        firm_layout.addRow("Телефон 2:", self.s_phone2)
+        firm_layout.addRow(QLabel("<b>Данни за техник (НАП)</b>"))
+        firm_layout.addRow("Име:", self.s_tech_f)
+        firm_layout.addRow("Презиме:", self.s_tech_m)
+        firm_layout.addRow("Фамилия:", self.s_tech_l)
+        firm_layout.addRow("ЕГН:", self.s_tech_egn)
+        
+        # Tab 2: Config (Actions)
+        self.config_tab = QWidget()
+        config_layout = QVBoxLayout(self.config_tab)
+        
+        import_btn = QPushButton("📥 Импорт от Excel")
+        import_btn.setFixedHeight(40)
+        import_btn.clicked.connect(lambda: parent.import_from_excel() if parent else None)
+        
+        certs_btn = QPushButton("📋 Зареди сертификати от БИМ")
+        certs_btn.setFixedHeight(40)
+        certs_btn.clicked.connect(lambda: parent.load_certificates() if parent else None)
+        
+        config_layout.addStretch()
+        config_layout.addWidget(import_btn)
+        config_layout.addSpacing(10)
+        config_layout.addWidget(certs_btn)
+        config_layout.addStretch()
+        
+        self.tabs.addTab(self.firm_tab, "Данни за сервизната фирма")
+        self.tabs.addTab(self.config_tab, "Конфигуриране")
+        
+        layout.addWidget(self.tabs)
+        
+        # Buttons
+        btns = QHBoxLayout()
+        save_btn = QPushButton("Запази")
+        save_btn.clicked.connect(self.save_settings)
+        cancel_btn = QPushButton("Отказ")
+        cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(save_btn)
+        btns.addWidget(cancel_btn)
+        layout.addLayout(btns)
+        
+        self.load_settings()
+
+    def check_service_eik(self):
+        eik = self.s_eik.text().strip()
+        if not eik: return
+        from vat_check import check_vat
+        data = check_vat(eik)
+        if data:
+            self.s_name.setText(data.get('name', ''))
+            self.s_addr.setText(data.get('address', ''))
+            self.s_mol.setText(data.get('mol', ''))
+            self.s_city.setText(data.get('city', ''))
+            self.s_post.setText(data.get('postal_code', ''))
+            self.s_vat.setText("Да" if data.get('valid') else "Не")
+
+    def load_settings(self):
+        if os.path.exists(self.settings_file):
+            import json
+            try:
+                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.s_name.setText(data.get('name', ''))
+                    self.s_eik.setText(data.get('eik', ''))
+                    self.s_vat.setText(data.get('vat', ''))
+                    self.s_city.setText(data.get('city', ''))
+                    self.s_post.setText(data.get('post', ''))
+                    self.s_addr.setText(data.get('address', ''))
+                    self.s_mol.setText(data.get('mol', ''))
+                    self.s_phone1.setText(data.get('phone1', ''))
+                    self.s_phone2.setText(data.get('phone2', ''))
+                    self.s_tech_f.setText(data.get('tech_f', ''))
+                    self.s_tech_m.setText(data.get('tech_m', ''))
+                    self.s_tech_l.setText(data.get('tech_l', ''))
+                    self.s_tech_egn.setText(data.get('tech_egn', ''))
+            except: pass
+
+    def save_settings(self):
+        import json
+        data = {
+            'name': self.s_name.text(),
+            'eik': self.s_eik.text(),
+            'vat': self.s_vat.text(),
+            'city': self.s_city.text(),
+            'post': self.s_post.text(),
+            'address': self.s_addr.text(),
+            'mol': self.s_mol.text(),
+            'phone1': self.s_phone1.text(),
+            'phone2': self.s_phone2.text(),
+            'tech_f': self.s_tech_f.text(),
+            'tech_m': self.s_tech_m.text(),
+            'tech_l': self.s_tech_l.text(),
+            'tech_egn': self.s_tech_egn.text()
+        }
+        try:
+            with open(self.settings_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при запис:\n{e}")

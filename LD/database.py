@@ -1,8 +1,9 @@
 import sqlite3
+import os
 from typing import Optional, List, Dict, Tuple, Any
 from datetime import datetime
-
-DB_PATH = "data/contracts.db"
+from path_utils import get_app_root
+DB_PATH = os.path.join(get_app_root(), "data", "contracts.db")
 
 
 def get_connection():
@@ -539,6 +540,16 @@ def get_all_certificates() -> List[Tuple[str, str]]:
     rows = cur.fetchall()
     con.close()
     return rows
+
+
+def get_certificate_expiry(number: str) -> Optional[str]:
+    """Get certificate expiry date by number"""
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute("SELECT expiry_date FROM certificates WHERE number = ?", (number,))
+    row = cur.fetchone()
+    con.close()
+    return row[0] if row else None
 
 
 def add_certificate(number: str, expiry_date: str) -> bool:
