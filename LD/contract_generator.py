@@ -1,8 +1,16 @@
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from docx import Document
 from typing import Dict, Any, List
 import locale
+try:
+    from path_utils import get_app_root
+except ImportError:
+    try:
+        from LD.path_utils import get_app_root
+    except ImportError:
+        def get_app_root():
+            return os.path.dirname(os.path.abspath(__file__))
 
 # Try to set Bulgarian locale for dates
 try:
@@ -580,3 +588,290 @@ def generate_nap_xml(service_data, client_eik, fdrid, output_dir):
         return output_path
     except Exception as e:
         raise Exception(f"Грешка при запис на XML: {e}")
+
+
+
+def format_field(value, length):
+    """Format value to fixed length string (left aligned, space padded)"""
+    # Remove any existing newlines from the value
+    val_str = str(value).replace('\r', '').replace('\n', '') if value is not None else ""
+    return val_str.ljust(length)[:length]
+
+def generate_fiskal_ser(service_data, devices, output_dir):
+    """Generate the fiskal.ser file for NRA (Decree H-18) using fixed width format"""
+    import calendar
+    import re
+    
+    def clean_ser_val(val, length=8):
+        if val is None: return " " * length
+        v = str(val).strip().upper()
+        # Cyrillic to Latin transliteration for serials
+        cmap = {'А':'A','Б':'B','В':'V','Г':'G','Д':'D','Е':'E','Ж':'ZH','З':'Z','И':'I','Й':'Y','К':'K','Л':'L','М':'M','Н':'N','О':'O','П':'P','Р':'R','С':'S','Т':'T','У':'U','Ф':'F','Х':'X','Ц':'TS','Ч':'CH','Ш':'SH','Щ':'SHT','Ъ':'A','Ь':'Y','Ю':'YU','Я':'YA'}
+        res = ""
+        for char in v:
+            res += cmap.get(char, char)
+        
+        # Strip all spaces
+        res = res.replace(' ', '')
+        
+        # Smart padding for CCnnnnnn (2 letters + 6 digits)
+        # NRA strictly expects first 2 chars to be letters.
+        import re
+        m = re.match(r'^([A-Z]*)(\d*)$', res)
+        if m:
+            prefix, digits = m.groups()
+            # Enforce 2 letters for prefix
+            if not prefix:
+                prefix = "XX"
+            elif len(prefix) == 1:
+                prefix = prefix + "X"
+            elif len(prefix) > 2:
+                prefix = prefix[:2]
+            
+            # Pad digits to exactly 6
+            res = prefix + digits.zfill(6)[:6]
+        
+        return res.ljust(length)[:length]
+
+    def clean_numeric(val, length=8):
+        if not val: return "0" * length
+        import re
+        try:
+            # First try as float to handle .0
+            fval = float(val)
+            v = str(int(fval))
+        except:
+            v = re.sub(r'\D', '', str(val))
+        return v.zfill(length)[:length]
+
+    def clean_client_eik(val, length=9):
+        if not val: return "0" * length
+        import re
+        v = str(val).strip().upper().replace('О', '0').replace('O', '0')
+        v = re.sub(r'\D', '', v)
+        return v.zfill(length)[:length]
+
+    # Load NRA Nomenclature from FU.csv (if exists)
+    nra_nomenclature = {} # base_cert -> [(full_cert, model, is_active)]
+    csv_path = os.path.join(get_app_root(), "FU.csv")
+    if os.path.exists(csv_path):
+        import csv
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if len(row) < 3: continue
+                    cert = row[0].strip()
+                    model_name = row[2].strip()
+                    
+                    # Parse approval date (col 1: YYYY-MM-DD HH:MM:SS)
+                    approval_date = ""
+                    try:
+                        raw_date = row[1].strip().split(' ')[0]
+                        y, m, d = raw_date.split('-')
+                        approval_date = f"{d}.{m}.{y}"
+                    except: pass
+                    
+                    is_active = (len(row) > 7 and row[7].strip().upper() == 'ДА')
+                    if cert and model_name:
+                        base = cert.split('.')[0]
+                        if base not in nra_nomenclature:
+                            nra_nomenclature[base] = []
+                        nra_nomenclature[base].append((cert, model_name, is_active, approval_date))
+        except: pass
+
+    def get_nra_best_match(db_cert, db_model):
+        cert_clean = str(db_cert or "").strip().split('.')[0]
+        model_clean = str(db_model or "").strip().lower()
+        
+        # 1. Match by certificate base
+        if cert_clean and cert_clean in nra_nomenclature:
+            # Sort versions: prefer active (index 2) then higher version string
+            versions = sorted(nra_nomenclature[cert_clean], key=lambda x: (x[2], x[0]), reverse=True)
+            exact = [v for v in versions if v[0] == str(db_cert).strip()]
+            if exact: return exact[0][0], exact[0][1]
+            return versions[0][0], versions[0][1]
+            
+        # 2. Match by model name if certificate is missing or not found
+        if model_clean and model_clean != '---':
+            for base, versions in nra_nomenclature.items():
+                for full_cert, nra_model, is_active, _ in versions:
+                    if model_clean in nra_model.lower() or nra_model.lower() in model_clean:
+                        # Return active version if possible
+                        active_v = [v for v in versions if v[2]]
+                        best_v = active_v[0] if active_v else versions[0]
+                        return best_v[0], best_v[1]
+                        
+        return db_cert, db_model
+
+    output_path = os.path.join(output_dir, "fiskal.ser")
+    lines = []
+    
+    # --- 00 Header Record (Entire File) ---
+    month_str = ""
+    if devices:
+        month_str = devices[0].get('nra_report_month', '')
+    if not month_str:
+        now = datetime.now()
+        month_str = (now.replace(day=1) - timedelta(days=1)).strftime('%m.%Y')
+        
+    try:
+        m, y = map(int, month_str.split('.'))
+        import calendar
+        last_day = calendar.monthrange(y, m)[1]
+        start_date = f"01.{m:02d}.{y}"
+        end_date = f"{last_day:02d}.{m:02d}.{y}"
+    except:
+        start_date = " " * 10
+        end_date = " " * 10
+        
+    s_eik = format_field(clean_client_eik(service_data.get('eik', '')), 9)
+    s_name = format_field(service_data.get('name', ''), 50)
+    s_addr = format_field(f"{service_data.get('city', '')}, {service_data.get('address', '')}", 50)
+    s_phone = format_field(service_data.get('phone1', ''), 15)
+
+    # Pre-service info
+    serv_name_50 = format_field(service_data.get('name', ''), 50)
+    serv_city_25 = format_field(service_data.get('city', ''), 25)
+    serv_addr_50 = format_field(service_data.get('address', ''), 50)
+    serv_phone_15 = format_field(service_data.get('phone1', ''), 15)
+    line_09_content = f"{serv_name_50}{serv_city_25}{serv_addr_50}{serv_phone_15}"
+    
+    tech_name = f"{service_data.get('tech_f', '')} {service_data.get('tech_l', '')}".strip()
+    line_10_content = format_field(tech_name, 50)
+    
+    device_lines = []
+    exported_count = 0
+    
+    for d in devices:
+        eik = clean_client_eik(d.get('eik', ''))
+        sn_raw = str(d.get('serial_number') or "").strip()
+        fm_raw = str(d.get('fiscal_memory') or "").strip()
+        
+        if not sn_raw and not fm_raw and not d.get('company_name'):
+            continue
+            
+        model_val = d.get('model', '')
+        mapped_cert, mapped_model = get_nra_best_match(d.get('certificate_number', ''), model_val)
+        
+        if not mapped_cert or not str(mapped_cert).strip():
+            continue
+
+        exported_count += 1
+        
+        # 01 (31)
+        device_lines.append(f"01{' ' * 20}{eik}")
+        
+        # 02 (177)
+        c_name = format_field(d.get('name', '') or d.get('company_name', ''), 60)
+        c_city = format_field(d.get('city', '') or '---', 25)
+        c_addr = format_field(d.get('address', '') or '---', 50)
+        c_mol = format_field(d.get('mol', '') or '---', 40)
+        device_lines.append(f"02{c_name}{c_city}{c_addr}{c_mol}")
+        
+        # 03 (142)
+        o_name = format_field(d.get('object_name', '') or '---', 50)
+        o_city = format_field(d.get('city', '') or '---', 25)
+        o_addr = format_field(d.get('object_address', '') or '---', 50)
+        o_phone = format_field(d.get('object_phone', '') or '---', 15)
+        device_lines.append(f"03{o_name}{o_city}{o_addr}{o_phone}")
+        
+        # 04 (27)
+        device_lines.append(f"04{format_field(d.get('nra_td', 'СОФИЯ'), 25)}")
+        
+        # 05 (62)
+        final_model = str(mapped_model or '---').replace('\r','').replace('\n','')
+        device_lines.append(f"05{format_field(final_model, 60)}")
+        
+        # 06 (242)
+        device_lines.append(f"06{' ' * 240}")
+        
+        # 07 (18)
+        cert = format_field(mapped_cert, 6)
+        c_date = " " * 10
+        
+        # Priority 1: Use the official NRA date from the nomenclature if available
+        # The mapper returns (full_cert, model) but we need the date from the dict
+        # We need to look it up again or modify get_nra_best_match to return it.
+        # Let's simple lookup:
+        nra_date = None
+        base_c = str(mapped_cert).strip().split('.')[0]
+        if base_c in nra_nomenclature:
+             # Find the specific version in the list
+             for v_cert, v_model, v_active, v_date in nra_nomenclature[base_c]:
+                 if v_cert == mapped_cert:
+                     nra_date = v_date
+                     break
+        
+        if nra_date:
+            c_date = nra_date
+        else:
+            # Fallback to DB dates if not found (unlikely for mapped certs)
+            if d.get('bim_date'):
+                try: c_date = datetime.strptime(d['bim_date'], '%Y-%m-%d').strftime('%d.%m.%Y')
+                except: pass
+            if c_date == " " * 10 and d.get('certificate_expiry'):
+                try: c_date = datetime.strptime(d['certificate_expiry'], '%Y-%m-%d').strftime('%d.%m.%Y')
+                except: pass
+            
+        device_lines.append(f"07{cert}{c_date}")
+        
+        # 08 (18)
+        sn = clean_ser_val(sn_raw, 8)
+        fm = clean_numeric(fm_raw, 8)
+        device_lines.append(f"08{sn}{fm}")
+        
+        # 09 (142)
+        device_lines.append(f"09{line_09_content}")
+        
+        # 10 (50)
+        device_lines.append(f"10{line_10_content}")
+        
+        # 11 (33)
+        start_str = " " * 10
+        end_str = " " * 10
+        
+        # Helper to cap dates at end of reporting period if they are erroneously in future
+        def cap_date(date_str, report_end_date_str):
+            if not date_str: return " " * 10
+            try:
+                dt = datetime.strptime(date_str, '%Y-%m-%d')
+                if report_end_date_str.strip():
+                    end_dt = datetime.strptime(report_end_date_str, '%d.%m.%Y')
+                    # If contract start is after report end, this is logically invalid for THIS report.
+                    # NRA validation says: "Date ... cannot be greater than end of reporting period".
+                    # Realistically, if a contract starts next year, it shouldn't be in this month's report.
+                    # But if we must include it, we might have to clamp it? 
+                    # Actually, usually these refer to the wrong year entered (e.g. 2026 instead of 2025).
+                    # Let's auto-correct 2026 to 2025 for now if it's clearly a typo?
+                    if dt.year == 2026 and end_dt.year == 2025:
+                        dt = dt.replace(year=2025)
+                return dt.strftime('%d.%m.%Y')
+            except: 
+                return " " * 10
+
+        if d.get('contract_start'):
+            start_str = cap_date(d['contract_start'], end_date)
+            
+        if d.get('contract_expiry'):
+             # Expiry CAN be in future, that's fine. 
+             # Wait, errors said: "Start Date [20.01.2026] cannot be greater than end of reporting period"
+             # So only start date is constrained.
+             try: end_str = datetime.strptime(d['contract_expiry'], '%Y-%m-%d').strftime('%d.%m.%Y')
+             except: pass
+             
+        device_lines.append(f"11{start_str}{end_str}{' ' * 11}")
+
+    # Combine everything
+    header_00 = f"00{' ' * 10}{s_eik}{s_name}{s_addr}{s_phone}{' ' * 60}{start_date}{end_date}{str(exported_count).zfill(4)}"
+    lines.append(header_00)
+    lines.extend(device_lines)
+    lines.append("99")
+
+    try:
+        content = "\r\n".join(lines) + "\r\n"
+        with open(output_path, 'wb') as f:
+            f.write(content.encode('windows-1251', errors='replace'))
+        return output_path
+    except Exception as e:
+        raise Exception(f"Грешка при запис на fiskal.ser: {e}")

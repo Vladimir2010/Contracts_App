@@ -1,14 +1,15 @@
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QMessageBox, QDateEdit, QCheckBox, QLabel, QTabWidget, QWidget,
-    QFileDialog, QSpinBox, QCompleter
+    QFileDialog, QSpinBox, QCompleter, QTableWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView
 )
 from PyQt6.QtCore import QDate, Qt
 from vat_check import check_vat
 from database import (
     get_all_certificates, add_client, add_device, get_client_by_contract,
     get_all_contract_numbers, update_device, get_device_full,
-    get_next_contract_number
+    get_next_contract_number, get_devices_for_nra_report
 )
 from export_excel import export_to_excel
 from export_word import export_to_word
@@ -153,9 +154,38 @@ class AddDeviceDialog(QDialog):
         
         device_tab.setLayout(device_layout)
         
+        # Tab 3: NRA Report (Decree H-18)
+        nra_tab = QWidget()
+        nra_layout = QFormLayout()
+        
+        self.nra_report_enabled = QCheckBox("Включи в месечния отчет към НАП")
+        self.nra_report_enabled.setChecked(True)
+        
+        self.nra_report_month = QLineEdit(datetime.now().strftime('%m.%Y'))
+        self.nra_td = QComboBox()
+        self.nra_td.addItems(["СОФИЯ", "ПЛОВДИВ", "ВАРНА", "БУРГАС", "ВЕЛИКО ТЪРНОВО"])
+        self.nra_td.setEditable(True)
+        self.nra_td.setCurrentText("СОФИЯ")
+        
+        self.bim_model = QLineEdit()
+        self.bim_date = QDateEdit()
+        self.bim_date.setCalendarPopup(True)
+        self.bim_date.setDisplayFormat("dd.MM.yyyy 'г.'")
+        self.bim_date.setDate(QDate.currentDate())
+        
+        nra_layout.addRow("", self.nra_report_enabled)
+        nra_layout.addRow("Месец за отчет (мм.гггг):", self.nra_report_month)
+        nra_layout.addRow("Териториална дирекция:", self.nra_td)
+        nra_layout.addRow(QLabel("<b>Данни от БИМ:</b>"))
+        nra_layout.addRow("Модел:", self.bim_model)
+        nra_layout.addRow("Дата Свидетелство:", self.bim_date)
+        
+        nra_tab.setLayout(nra_layout)
+        
         # Add tabs
         tabs.addTab(client_tab, "Данни за клиент")
         tabs.addTab(device_tab, "Данни за устройство")
+        tabs.addTab(nra_tab, "Отчет НАП (Н-18)")
         
         # Buttons
         btn_layout = QHBoxLayout()
@@ -389,7 +419,12 @@ class AddDeviceDialog(QDialog):
                 'certificate_number': self.certificate_number.currentText().strip(),
                 'certificate_expiry': self.certificate_expiry.date().toString('yyyy-MM-dd'),
                 'serial_number': serial,
-                'fiscal_memory': fiscal
+                'fiscal_memory': fiscal,
+                'nra_report_enabled': self.nra_report_enabled.isChecked(),
+                'nra_report_month': self.nra_report_month.text().strip(),
+                'nra_td': self.nra_td.currentText().strip(),
+                'bim_model': self.bim_model.text().strip(),
+                'bim_date': self.bim_date.date().toString('yyyy-MM-dd')
             }
             
             # Add to database
@@ -454,6 +489,19 @@ class AddToExistingContractDialog(QDialog):
         self.serial_number = QLineEdit()
         self.fiscal_memory = QLineEdit()
         
+        self.nra_report_enabled = QCheckBox("Включи в месечния отчет към НАП")
+        self.nra_report_enabled.setChecked(True)
+        self.nra_report_month = QLineEdit(datetime.now().strftime('%m.%Y'))
+        self.nra_td = QComboBox()
+        self.nra_td.addItems(["СОФИЯ", "ПЛОВДИВ", "ВАРНА", "БУРГАС", "ВЕЛИКО ТЪРНОВО"])
+        self.nra_td.setEditable(True)
+        self.nra_td.setCurrentText("СОФИЯ")
+        self.bim_model = QLineEdit()
+        self.bim_date = QDateEdit()
+        self.bim_date.setCalendarPopup(True)
+        self.bim_date.setDisplayFormat("dd.MM.yyyy 'г.'")
+        self.bim_date.setDate(QDate.currentDate())
+        
         form.addRow("FDRID:", self.fdrid)
         form.addRow("", self.euro_done)
         form.addRow("Име на обект:", self.object_name)
@@ -464,6 +512,12 @@ class AddToExistingContractDialog(QDialog):
         form.addRow("Изтичане свидетелство:", self.certificate_expiry)
         form.addRow("Сериен номер:", self.serial_number)
         form.addRow("№ Фискална памет:", self.fiscal_memory)
+        form.addRow(QLabel("<b>Отчет към НАП (Н-18):</b>"))
+        form.addRow("", self.nra_report_enabled)
+        form.addRow("Месец за отчет:", self.nra_report_month)
+        form.addRow("Териториална дирекция:", self.nra_td)
+        form.addRow("БИМ Модел:", self.bim_model)
+        form.addRow("БИМ Дата:", self.bim_date)
         
         # Connect phone formatting
         # These lines are incorrect as self.phone1 and self.phone2 are not attributes of this class
@@ -557,7 +611,12 @@ class AddToExistingContractDialog(QDialog):
                 'certificate_number': self.certificate_number.currentText().strip(),
                 'certificate_expiry': self.certificate_expiry.date().toString('yyyy-MM-dd'),
                 'serial_number': self.serial_number.text().strip(),
-                'fiscal_memory': self.fiscal_memory.text().strip()
+                'fiscal_memory': self.fiscal_memory.text().strip(),
+                'nra_report_enabled': self.nra_report_enabled.isChecked(),
+                'nra_report_month': self.nra_report_month.text().strip(),
+                'nra_td': self.nra_td.currentText().strip(),
+                'bim_model': self.bim_model.text().strip(),
+                'bim_date': self.bim_date.date().toString('yyyy-MM-dd')
             }
             
             add_device(self.current_client_id, device_data)
@@ -705,9 +764,38 @@ class EditDeviceDialog(QDialog):
         
         device_tab.setLayout(device_layout)
         
+        # Tab 3: NRA Report (Decree H-18)
+        nra_tab = QWidget()
+        nra_layout = QFormLayout()
+        
+        self.nra_report_enabled = QCheckBox("Включи в месечния отчет към НАП")
+        self.nra_report_enabled.setChecked(device_data.get('nra_report_enabled', True))
+        
+        self.nra_report_month = QLineEdit(device_data.get('nra_report_month', datetime.now().strftime('%m.%Y')))
+        self.nra_td = QComboBox()
+        self.nra_td.addItems(["СОФИЯ", "ПЛОВДИВ", "ВАРНА", "БУРГАС", "ВЕЛИКО ТЪРНОВО"])
+        self.nra_td.setEditable(True)
+        self.nra_td.setCurrentText(device_data.get('nra_td', 'СОФИЯ'))
+        
+        self.bim_model = QLineEdit(device_data.get('bim_model', ''))
+        self.bim_date = QDateEdit()
+        self.bim_date.setCalendarPopup(True)
+        self.bim_date.setDisplayFormat("dd.MM.yyyy 'г.'")
+        self.set_date_from_string(self.bim_date, device_data.get('bim_date'))
+        
+        nra_layout.addRow("", self.nra_report_enabled)
+        nra_layout.addRow("Месец за отчет (мм.гггг):", self.nra_report_month)
+        nra_layout.addRow("Териториална дирекция:", self.nra_td)
+        nra_layout.addRow(QLabel("<b>Данни от БИМ:</b>"))
+        nra_layout.addRow("Модел:", self.bim_model)
+        nra_layout.addRow("Дата Свидетелство:", self.bim_date)
+        
+        nra_tab.setLayout(nra_layout)
+        
         # Add tabs
         tabs.addTab(client_tab, "Данни за клиент")
         tabs.addTab(device_tab, "Данни за устройство")
+        tabs.addTab(nra_tab, "Отчет НАП (Н-18)")
         
         # Buttons
         btn_layout = QHBoxLayout()
@@ -888,7 +976,12 @@ class EditDeviceDialog(QDialog):
                 'certificate_number': self.certificate_number.currentText().strip(),
                 'certificate_expiry': self.certificate_expiry.date().toString('yyyy-MM-dd'),
                 'serial_number': self.serial_number.text().strip(),
-                'fiscal_memory': self.fiscal_memory.text().strip()
+                'fiscal_memory': self.fiscal_memory.text().strip(),
+                'nra_report_enabled': self.nra_report_enabled.isChecked(),
+                'nra_report_month': self.nra_report_month.text().strip(),
+                'nra_td': self.nra_td.currentText().strip(),
+                'bim_model': self.bim_model.text().strip(),
+                'bim_date': self.bim_date.date().toString('yyyy-MM-dd')
             }
             
             if update_device(self.device_id, client_data, device_data):
@@ -1236,22 +1329,292 @@ class DeregistrationDialog(QDialog):
             "storno_g": self.storno_g.text()
         }
 
+
+class LoginDialog(QDialog):
+    """Login dialog with attempt counting"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Вход в системата")
+        self.attempts = 0
+        self.max_attempts = 10
+        self.user = None
+        
+        self.init_ui()
+        
+    def init_ui(self):
+        # Allow resizing and set a generous default size
+        self.setMinimumSize(500, 350)
+        self.setSizeGripEnabled(True)
+        
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #f5f5f5;
+            }
+            QLabel {
+                font-family: 'Segoe UI', sans-serif;
+                color: #333;
+            }
+            QLineEdit {
+                padding: 12px;
+                border: 1px solid #ccc;
+                border-radius: 6px;
+                font-size: 16px;
+                background-color: white;
+                min-height: 25px; 
+            }
+            QLineEdit:focus {
+                border: 2px solid #3498db;
+            }
+            QPushButton {
+                padding: 12px 24px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 15px;
+                min-width: 100px;
+                min-height: 25px;
+            }
+            QPushButton#btnLogin {
+                background-color: #3498db;
+                color: white;
+                border: none;
+            }
+            QPushButton#btnLogin:hover {
+                background-color: #2980b9;
+            }
+            QPushButton#btnExit {
+                background-color: #e74c3c;
+                color: white;
+                border: none;
+            }
+            QPushButton#btnExit:hover {
+                background-color: #c0392b;
+            }
+        """)
+        
+        layout = QVBoxLayout()
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(25)
+        
+        # Logo or Title with Icon
+        header_layout = QVBoxLayout()
+        
+        title = QLabel("Вход в системата")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-size: 28px; font-weight: bold; color: #2c3e50; margin-bottom: 5px;")
+        header_layout.addWidget(title)
+        
+        subtitle = QLabel("Регистър на фискални устройства")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("font-size: 16px; color: #7f8c8d;")
+        header_layout.addWidget(subtitle)
+        
+        layout.addLayout(header_layout)
+        
+        # Form Container
+        form_container = QWidget()
+        form_container.setStyleSheet("background-color: white; border-radius: 10px; border: 1px solid #ddd;")
+        
+        # Use simpler layout inside container
+        form_layout = QVBoxLayout(form_container)
+        form_layout.setContentsMargins(30, 30, 30, 30)
+        form_layout.setSpacing(20)
+        
+        self.username = QLineEdit()
+        self.username.setPlaceholderText("Потребителско име")
+        
+        self.password = QLineEdit()
+        self.password.setPlaceholderText("Парола")
+        self.password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password.returnPressed.connect(self.attempt_login)
+        
+        form_layout.addWidget(self.username)
+        form_layout.addWidget(self.password)
+        
+        layout.addWidget(form_container)
+        
+        self.lbl_error = QLabel("")
+        self.lbl_error.setStyleSheet("color: #e74c3c; font-size: 12px; font-weight: bold;")
+        self.lbl_error.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.lbl_error)
+        
+        buttons = QHBoxLayout()
+        buttons.setSpacing(15)
+        
+        btn_login = QPushButton("ВХОД")
+        btn_login.setObjectName("btnLogin")
+        btn_login.clicked.connect(self.attempt_login)
+        btn_login.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        btn_exit = QPushButton("ИЗХОД")
+        btn_exit.setObjectName("btnExit")
+        btn_exit.clicked.connect(self.reject)
+        btn_exit.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        buttons.addWidget(btn_exit) # Exit left
+        buttons.addWidget(btn_login) # Login right
+        layout.addLayout(buttons)
+        
+        self.setLayout(layout)
+
+    def attempt_login(self):
+        username = self.username.text().strip()
+        password = self.password.text().strip()
+        
+        if not username or not password:
+            self.lbl_error.setText("Моля, попълнете всички полета.")
+            self.username.setFocus() if not username else self.password.setFocus()
+            return
+
+        from database import get_user_by_username, log_action
+        from auth import verify_password
+        
+        user_data = get_user_by_username(username)
+        
+        success = False
+        if user_data:
+            if verify_password(user_data['password_hash'], password):
+                success = True
+                self.user = user_data
+        
+        if success:
+            log_action(self.user['id'], self.user['username'], "LOGIN", "Успешно влизане")
+            QMessageBox.information(self, "Успешно влизане!", f"Добре дошли, {self.user.get('full_name', self.user.get('username'))}!")
+            self.accept()
+        else:
+            self.attempts += 1
+            remaining = self.max_attempts - self.attempts
+            self.lbl_error.setText(f"Грешно име или парола! Остават {remaining} опита.")
+            self.password.clear()
+            self.password.setFocus()
+            
+            if remaining <= 0:
+                QMessageBox.critical(self, "Грешка", "Превишен брой опити за вход! Програмата ще се затвори.")
+                self.reject()
+
+class EditUserDialog(QDialog):
+    def __init__(self, user_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Редактиране на потребител")
+        self.user_data = user_data
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QFormLayout(self)
+        
+        self.u_username = QLineEdit(self.user_data['username'])
+        self.u_username.setReadOnly(True) # Cannot change username
+        
+        self.u_name = QLineEdit(self.user_data['full_name'])
+        
+        self.u_pass = QLineEdit()
+        self.u_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.u_pass.setPlaceholderText("Оставете празно ако не променяте")
+        
+        self.u_role = QComboBox()
+        self.u_role.addItems(["Потребител", "Администратор"])
+        current_role = self.user_data.get('role', 'user')
+        idx = 1 if current_role == 'admin' else 0
+        self.u_role.setCurrentIndex(idx)
+        
+        # Prevent demoting vladpos
+        if self.user_data['username'] == 'vladpos':
+            self.u_role.setEnabled(False)
+            
+        layout.addRow("Потребителско име:", self.u_username)
+        layout.addRow("Име и Фамилия:", self.u_name)
+        layout.addRow("Нова парола:", self.u_pass)
+        layout.addRow("Роля:", self.u_role)
+        
+        btns = QHBoxLayout()
+        btn_save = QPushButton("Запази")
+        btn_save.clicked.connect(self.save)
+        btn_cancel = QPushButton("Отказ")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btns.addWidget(btn_save)
+        btns.addWidget(btn_cancel)
+        layout.addRow("", btns)
+        
+    def save(self):
+        full_name = self.u_name.text().strip()
+        password = self.u_pass.text().strip()
+        role_text = self.u_role.currentText()
+        role = "admin" if role_text == "Администратор" else "user"
+        
+        if not full_name:
+            QMessageBox.warning(self, "Грешка", "Името е задължително!")
+            return
+            
+        from database import update_user
+        from auth import hash_password
+        
+        pwd_hash = hash_password(password) if password else None
+        
+        if update_user(self.user_data['id'], full_name, role, pwd_hash):
+            QMessageBox.information(self, "Успех", "Потребителят е обновен!")
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Грешка", "Грешка при обновяване!")
+
+
 class SettingsDialog(QDialog):
+    """Settings dialog including Service Firm data and User Management"""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Настройки")
-        self.setMinimumSize(500, 450)
+        self.resize(600, 500)
         
-        from path_utils import get_app_root
-        self.settings_file = os.path.join(get_app_root(), "data", "settings.json")
-        os.makedirs(os.path.dirname(self.settings_file), exist_ok=True)
+        # Get user from parent
+        self.user = getattr(parent, 'current_user', None) if parent else None
         
-        layout = QVBoxLayout(self)
+        self.init_ui()
+        self.load_settings()
+        self.load_users()
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
         self.tabs = QTabWidget()
         
-        # Tab 1: Service Firm info
-        self.firm_tab = QWidget()
-        firm_layout = QFormLayout(self.firm_tab)
+        # Tab 1: Service Firm Settings
+        self.tab_service = QWidget()
+        self.init_service_tab()
+        self.tabs.addTab(self.tab_service, "Сервизна фирма")
+        
+        # Tab 2: Technician Settings
+        self.tab_tech = QWidget()
+        self.init_tech_tab()
+        self.tabs.addTab(self.tab_tech, "Сервизен техник")
+        
+        # Tab 3: Configuration (Paths etc)
+        self.tab_config = QWidget()
+        self.init_config_tab()
+        self.tabs.addTab(self.tab_config, "Конфигурация")
+
+        # Tab 4: Users (New)
+        if self.user and self.user.get('role') == 'admin':
+            self.tab_users = QWidget()
+            self.init_users_tab()
+            self.tabs.addTab(self.tab_users, "Потребители")
+        
+        layout.addWidget(self.tabs)
+        
+        # Buttons
+        buttons = QHBoxLayout()
+        btn_save = QPushButton("Запази настройките")
+        btn_save.clicked.connect(self.save_settings)
+        btn_close = QPushButton("Затвори")
+        btn_close.clicked.connect(self.reject)
+        
+        buttons.addStretch()
+        buttons.addWidget(btn_save)
+        buttons.addWidget(btn_close)
+        
+        layout.addLayout(buttons)
+        self.setLayout(layout)
+        
+    def init_service_tab(self):
+        layout = QFormLayout()
         
         self.s_name = QLineEdit()
         self.s_eik = QLineEdit()
@@ -1262,84 +1625,242 @@ class SettingsDialog(QDialog):
         self.s_mol = QLineEdit()
         self.s_phone1 = QLineEdit()
         self.s_phone2 = QLineEdit()
-        self.s_tech_f = QLineEdit()
-        self.s_tech_m = QLineEdit()
-        self.s_tech_l = QLineEdit()
-        self.s_tech_egn = QLineEdit()
         
-        check_btn = QPushButton("Провери ЕИК")
+        # Check Service EIK Button (also checks VAT via VIES)
+        check_btn = QPushButton("Провери ЕИК и ДДС")
         check_btn.clicked.connect(self.check_service_eik)
         
-        firm_layout.addRow("ЕИК:", self.s_eik)
-        firm_layout.addRow("", check_btn)
-        firm_layout.addRow("Име на фирма:", self.s_name)
-        firm_layout.addRow("ЗДДС рег.:", self.s_vat)
-        firm_layout.addRow("Град:", self.s_city)
-        firm_layout.addRow("Пощ. код:", self.s_post)
-        firm_layout.addRow("Адрес:", self.s_addr)
-        firm_layout.addRow("МОЛ:", self.s_mol)
-        firm_layout.addRow("Телефон 1:", self.s_phone1)
-        firm_layout.addRow("Телефон 2:", self.s_phone2)
-        firm_layout.addRow(QLabel("<b>Данни за техник (НАП)</b>"))
-        firm_layout.addRow("Име:", self.s_tech_f)
-        firm_layout.addRow("Презиме:", self.s_tech_m)
-        firm_layout.addRow("Фамилия:", self.s_tech_l)
-        firm_layout.addRow("ЕГН:", self.s_tech_egn)
+        self.s_vat_reg = QCheckBox("ДДС Регистриран")
         
-        # Tab 2: Config (Actions)
-        self.config_tab = QWidget()
-        config_layout = QVBoxLayout(self.config_tab)
+        layout.addRow("ЕИК:", self.s_eik)
+        layout.addRow("", check_btn)
+        layout.addRow("Име на фирма:", self.s_name)
+        layout.addRow("ЗДДС рег. номер:", self.s_vat)
+        layout.addRow("", self.s_vat_reg)
         
-        import_btn = QPushButton("📥 Импорт от Excel")
-        import_btn.setFixedHeight(40)
-        import_btn.clicked.connect(lambda: parent.import_from_excel() if parent else None)
+        layout.addRow("Град:", self.s_city)
+        layout.addRow("Пощ. код:", self.s_post)
+        layout.addRow("Адрес:", self.s_addr)
+        layout.addRow("МОЛ:", self.s_mol)
+        layout.addRow("Телефон 1:", self.s_phone1)
+        layout.addRow("Телефон 2:", self.s_phone2)
         
-        certs_btn = QPushButton("📋 Зареди сертификати от БИМ")
-        certs_btn.setFixedHeight(40)
-        certs_btn.clicked.connect(lambda: parent.load_certificates() if parent else None)
-        
-        config_layout.addStretch()
-        config_layout.addWidget(import_btn)
-        config_layout.addSpacing(10)
-        config_layout.addWidget(certs_btn)
-        config_layout.addStretch()
-        
-        self.tabs.addTab(self.firm_tab, "Данни за сервизната фирма")
-        self.tabs.addTab(self.config_tab, "Конфигуриране")
-        
-        layout.addWidget(self.tabs)
-        
-        # Buttons
-        btns = QHBoxLayout()
-        save_btn = QPushButton("Запази")
-        save_btn.clicked.connect(self.save_settings)
-        cancel_btn = QPushButton("Отказ")
-        cancel_btn.clicked.connect(self.reject)
-        btns.addWidget(save_btn)
-        btns.addWidget(cancel_btn)
-        layout.addLayout(btns)
-        
-        self.load_settings()
+        self.tab_service.setLayout(layout)
 
     def check_service_eik(self):
         eik = self.s_eik.text().strip()
-        if not eik: return
+        if not eik:
+            QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК!")
+            return
+            
         from vat_check import check_vat
-        data = check_vat(eik)
-        if data:
-            self.s_name.setText(data.get('name', ''))
-            self.s_addr.setText(data.get('address', ''))
-            self.s_mol.setText(data.get('mol', ''))
-            self.s_city.setText(data.get('city', ''))
-            self.s_post.setText(data.get('postal_code', ''))
-            self.s_vat.setText("Да" if data.get('valid') else "Не")
+        
+        try:
+            data = check_vat(eik)
+            if data:
+                self.s_name.setText(data.get('name', ''))
+                self.s_addr.setText(data.get('address', ''))
+                self.s_mol.setText(data.get('mol', ''))
+                self.s_city.setText(data.get('city', ''))
+                self.s_post.setText(data.get('postal_code', ''))
+                
+                if data.get('valid'):
+                    # Construct VAT number (BG + EIK)
+                    self.s_vat.setText(f"BG{eik}")
+                    self.s_vat_reg.setChecked(True)
+                    QMessageBox.information(self, "Успех", "Данните са заредени успешно!\nФирмата е регистрирана по ДДС.")
+                else:
+                    self.s_vat_reg.setChecked(False)
+                    QMessageBox.information(self, "Успех", "Данните са заредени успешно!\nФирмата НЕ е регистрирана по ДДС.")
+            else:
+                QMessageBox.warning(self, "Грешка", "Не са намерени данни за този ЕИК.")
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при проверка:\n{str(e)}")
+
+    def init_tech_tab(self):
+        layout = QFormLayout()
+        
+        # Restoring original variable names where possible for clarity/compatibility
+        self.s_tech_f = QLineEdit() # Name
+        self.s_tech_m = QLineEdit() # Middle
+        self.s_tech_l = QLineEdit() # Last
+        self.s_tech_egn = QLineEdit()
+        
+        layout.addRow("Име:", self.s_tech_f)
+        layout.addRow("Презиме:", self.s_tech_m)
+        layout.addRow("Фамилия:", self.s_tech_l)
+        layout.addRow("ЕГН на техника:", self.s_tech_egn)
+        
+        label_info = QLabel("Данните са необходими за генериране на XML към НАП.")
+        label_info.setStyleSheet("color: gray; font-style: italic;")
+        layout.addRow(label_info)
+        
+        self.tab_tech.setLayout(layout)
+
+
+        
+    def init_config_tab(self):
+        layout = QFormLayout()
+        
+        self.c_db_path = QLineEdit()
+        self.c_db_path.setReadOnly(True)
+        from database import DB_PATH
+        self.c_db_path.setText(DB_PATH)
+        
+        layout.addRow("Път до база данни:", self.c_db_path)
+        
+        self.tab_config.setLayout(layout)
+
+    def init_users_tab(self):
+        layout = QVBoxLayout()
+        
+        # List of users
+        self.table_users = QTableWidget()
+        self.table_users.setColumnCount(4)
+        self.table_users.setHorizontalHeaderLabels(["ID", "Потребителско име", "Име", "Роля"])
+        self.table_users.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table_users.setSortingEnabled(True)
+        self.table_users.horizontalHeader().setStretchLastSection(True)
+        
+        layout.addWidget(QLabel("Списък потребители:"))
+        layout.addWidget(self.table_users)
+        
+        # Add User Form
+        grp_add = QWidget()
+        lay_add = QFormLayout()
+        
+        self.u_username = QLineEdit()
+        self.u_name = QLineEdit()
+        self.u_pass = QLineEdit()
+        self.u_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self.u_role = QComboBox()
+        self.u_role.addItems(["Потребител", "Администратор"])
+        
+        btn_add_user = QPushButton("Добави потребител")
+        btn_add_user.clicked.connect(self.add_new_user)
+        
+        lay_add.addRow("Потребителско име:", self.u_username)
+        lay_add.addRow("Име и Фамилия:", self.u_name)
+        lay_add.addRow("Парола:", self.u_pass)
+        lay_add.addRow("Роля:", self.u_role)
+        lay_add.addRow("", btn_add_user)
+        
+        grp_add.setLayout(lay_add)
+        layout.addWidget(grp_add)
+        
+        # Edit button
+        btn_edit_user = QPushButton("Редактирай избран потребител")
+        btn_edit_user.clicked.connect(self.edit_selected_user)
+        layout.addWidget(btn_edit_user)
+        
+        # Delete button
+        btn_del_user = QPushButton("Изтрий избран потребител")
+        btn_del_user.setStyleSheet("background-color: #ffcccc;")
+        btn_del_user.clicked.connect(self.delete_selected_user)
+        layout.addWidget(btn_del_user)
+        
+        # Permissions check
+        is_super_admin = (self.user and self.user.get('username') == 'vladpos')
+        if not is_super_admin:
+            grp_add.setVisible(False)
+            btn_edit_user.setVisible(False)
+            btn_del_user.setVisible(False)
+            layout.addWidget(QLabel("Управлението на потребители е ограничено само за главния администратор."))
+        
+        self.tab_users.setLayout(layout)
+
+    def load_users(self):
+        if not hasattr(self, 'table_users'): return
+        
+        from database import get_all_users
+        users = get_all_users()
+        
+        self.table_users.setRowCount(0)
+        for u in users:
+            row = self.table_users.rowCount()
+            self.table_users.insertRow(row)
+            self.table_users.setItem(row, 0, QTableWidgetItem(str(u['id'])))
+            self.table_users.setItem(row, 1, QTableWidgetItem(u['username']))
+            self.table_users.setItem(row, 2, QTableWidgetItem(u['full_name']))
+            
+            role_display = "Администратор" if u.get('role') == 'admin' else "Потребител"
+            self.table_users.setItem(row, 3, QTableWidgetItem(role_display))
+
+    def add_new_user(self):
+        username = self.u_username.text().strip()
+        name = self.u_name.text().strip()
+        password = self.u_pass.text().strip()
+        
+        if not username or not name or not password:
+            QMessageBox.warning(self, "Грешка", "Всички полета са задължителни!")
+            return
+            
+        from auth import hash_password
+        from database import add_user
+        
+        pwd_hash = hash_password(password)
+        role = "admin" if self.u_role.currentText() == "Администратор" else "user"
+        
+        if add_user(username, pwd_hash, name, role):
+            QMessageBox.information(self, "Успех", "Потребителят е добавен!")
+            self.u_username.clear()
+            self.u_name.clear()
+            self.u_pass.clear()
+            self.load_users()
+        else:
+            QMessageBox.critical(self, "Грешка", "Грешка при добавяне (може би потребителското име вече съществува?)")
+
+    def edit_selected_user(self):
+        selected = self.table_users.selectionModel().selectedRows()
+        if not selected:
+            QMessageBox.warning(self, "Внимание", "Моля, изберете потребител!")
+            return
+            
+        row = selected[0].row()
+        username = self.table_users.item(row, 1).text()
+        
+        from database import get_user_by_username
+        user_data = get_user_by_username(username)
+        
+        if not user_data: 
+            return
+        
+        dialog = EditUserDialog(user_data, self)
+        if dialog.exec():
+            self.load_users()
+
+    def delete_selected_user(self):
+        selected = self.table_users.selectionModel().selectedRows()
+        if not selected:
+            return
+            
+        row = selected[0].row()
+        uid = int(self.table_users.item(row, 0).text())
+        username = self.table_users.item(row, 1).text()
+        
+        if username == 'vladpos':
+            QMessageBox.warning(self, "Забранено", "Не можете да изтриете главния администратор!")
+            return
+            
+        reply = QMessageBox.question(self, "Потвърждение", f"Изтриване на потребител {username}?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            from database import delete_user
+            delete_user(uid)
+            self.load_users()
+
 
     def load_settings(self):
-        if os.path.exists(self.settings_file):
+        from path_utils import get_app_root
+        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        
+        if os.path.exists(settings_path):
             import json
             try:
-                with open(self.settings_file, 'r', encoding='utf-8') as f:
+                with open(settings_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    # Service Firm
                     self.s_name.setText(data.get('name', ''))
                     self.s_eik.setText(data.get('eik', ''))
                     self.s_vat.setText(data.get('vat', ''))
@@ -1349,32 +1870,290 @@ class SettingsDialog(QDialog):
                     self.s_mol.setText(data.get('mol', ''))
                     self.s_phone1.setText(data.get('phone1', ''))
                     self.s_phone2.setText(data.get('phone2', ''))
-                    self.s_tech_f.setText(data.get('tech_f', ''))
-                    self.s_tech_m.setText(data.get('tech_m', ''))
-                    self.s_tech_l.setText(data.get('tech_l', ''))
+                    self.s_vat_reg.setChecked(data.get('vat_registered', False))
+                    
+                    # Tech (handle old keys 'tech_name1' vs new/restored 'tech_f')
+                    self.s_tech_f.setText(data.get('tech_f', data.get('tech_name1', '')))
+                    self.s_tech_m.setText(data.get('tech_m', data.get('tech_name2', '')))
+                    self.s_tech_l.setText(data.get('tech_l', data.get('tech_name3', '')))
                     self.s_tech_egn.setText(data.get('tech_egn', ''))
-            except: pass
+            except Exception as e:
+                print(f"Error loading settings: {e}")
 
     def save_settings(self):
         import json
         data = {
-            'name': self.s_name.text(),
-            'eik': self.s_eik.text(),
-            'vat': self.s_vat.text(),
-            'city': self.s_city.text(),
-            'post': self.s_post.text(),
-            'address': self.s_addr.text(),
-            'mol': self.s_mol.text(),
-            'phone1': self.s_phone1.text(),
-            'phone2': self.s_phone2.text(),
-            'tech_f': self.s_tech_f.text(),
-            'tech_m': self.s_tech_m.text(),
-            'tech_l': self.s_tech_l.text(),
-            'tech_egn': self.s_tech_egn.text()
+            # Service Firm
+            'name': self.s_name.text().strip(),
+            'eik': self.s_eik.text().strip(),
+            'vat': self.s_vat.text().strip(),
+            'city': self.s_city.text().strip(),
+            'post': self.s_post.text().strip(),
+            'address': self.s_addr.text().strip(),
+            'mol': self.s_mol.text().strip(),
+            'phone1': self.s_phone1.text().strip(),
+            'phone2': self.s_phone2.text().strip(),
+            'vat_registered': self.s_vat_reg.isChecked(),
+            
+            # Tech
+            'tech_f': self.s_tech_f.text().strip(),
+            'tech_m': self.s_tech_m.text().strip(),
+            'tech_l': self.s_tech_l.text().strip(),
+            'tech_egn': self.s_tech_egn.text().strip(),
+            # Save as old keys too for compatibility if needed elsewhere
+            'tech_name1': self.s_tech_f.text().strip(),
+            'tech_name2': self.s_tech_m.text().strip(),
+            'tech_name3': self.s_tech_l.text().strip()
         }
+        
+        from path_utils import get_app_root
+        data_dir = os.path.join(get_app_root(), "data")
+        os.makedirs(data_dir, exist_ok=True)
+        
         try:
-            with open(self.settings_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=4)
+            with open(os.path.join(data_dir, "settings.json"), 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            QMessageBox.information(self, "Успех", "Настройките са запазени!")
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при запис:\n{e}")
+
+
+class NraReportDialog(QDialog):
+    """Dialog for previewing and generating the NRA (H-18) fiscal.ser report"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Месечен отчет към НАП (Наредба Н-18)")
+        self.setMinimumSize(900, 600)
+        
+        layout = QVBoxLayout()
+        
+        # Info label
+        info = QLabel("Списък на устройствата, маркирани за включване в месечния отчет (fiskal.ser)")
+        info.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        layout.addWidget(info)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels([
+            "Договор", "Фирма", "Модел", "Сериен номер", "Месец", "Дирекция"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        layout.addWidget(self.table)
+        
+        # Buttons
+        btn_layout = QHBoxLayout()
+        self.btn_refresh = QPushButton("🔄 Обнови")
+        self.btn_refresh.clicked.connect(self.load_data)
+        self.btn_generate = QPushButton("📄 Генерирай fiskal.ser")
+        self.btn_generate.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 5px;")
+        self.btn_generate.clicked.connect(self.generate_report)
+        self.btn_close = QPushButton("Затвори")
+        self.btn_close.clicked.connect(self.accept)
+        
+        btn_layout.addWidget(self.btn_refresh)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.btn_generate)
+        btn_layout.addWidget(self.btn_close)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        self.load_data()
+
+    def load_data(self):
+        devices = get_devices_for_nra_report()
+        self.table.setRowCount(len(devices))
+        
+        for i, d in enumerate(devices):
+            self.table.setItem(i, 0, QTableWidgetItem(str(d.get('contract_number', ''))))
+            self.table.setItem(i, 1, QTableWidgetItem(d.get('company_name', '')))
+            self.table.setItem(i, 2, QTableWidgetItem(d.get('model', '')))
+            self.table.setItem(i, 3, QTableWidgetItem(d.get('serial_number', '')))
+            self.table.setItem(i, 4, QTableWidgetItem(d.get('nra_report_month', '')))
+            self.table.setItem(i, 5, QTableWidgetItem(d.get('nra_td', '')))
+
+    def generate_report(self):
+        # We'll use the logic from main.py or move it here
+        parent = self.parent()
+        if hasattr(parent, 'run_nra_report_generation'):
+            parent.run_nra_report_generation()
+        else:
+            QMessageBox.warning(self, "Внимание", "Функцията за генериране не е достъпна в този контекст.")
+# Audit Log Viewer Dialog
+
+class AuditLogDialog(QDialog):
+    """Dialog to view audit logs of user actions"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Одит на действията")
+        self.resize(900, 600)
+        
+        self.init_ui()
+        self.load_logs()
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Filter section
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Филтър по потребител:"))
+        
+        self.filter_user = QLineEdit()
+        self.filter_user.setPlaceholderText("Потребителско име...")
+        self.filter_user.textChanged.connect(self.load_logs)
+        filter_layout.addWidget(self.filter_user)
+        
+        filter_layout.addWidget(QLabel("Действие:"))
+        self.filter_action = QLineEdit()
+        self.filter_action.setPlaceholderText("Тип действие...")
+        self.filter_action.textChanged.connect(self.load_logs)
+        filter_layout.addWidget(self.filter_action)
+        
+        btn_refresh = QPushButton("Обнови")
+        btn_refresh.clicked.connect(self.load_logs)
+        filter_layout.addWidget(btn_refresh)
+        
+        layout.addLayout(filter_layout)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Дата/Час", "Потребител", "Действие", "Детайли"])
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 150)
+        self.table.setColumnWidth(1, 120)
+        self.table.setColumnWidth(2, 150)
+        
+        layout.addWidget(self.table)
+        
+        # Close button
+        btn_close = QPushButton("Затвори")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+        
+        self.setLayout(layout)
+    
+    def load_logs(self):
+        """Load audit logs from database with optional filtering"""
+        from database import DB_PATH
+        import sqlite3
+        
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        query = "SELECT id, timestamp, username, action, details FROM audit_logs WHERE 1=1"
+        params = []
+        
+        # Apply filters
+        user_filter = self.filter_user.text().strip()
+        if user_filter:
+            query += " AND username LIKE ?"
+            params.append(f"%{user_filter}%")
+        
+        action_filter = self.filter_action.text().strip()
+        if action_filter:
+            query += " AND action LIKE ?"
+            params.append(f"%{action_filter}%")
+        
+        query += " ORDER BY id DESC LIMIT 1000"
+        
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        self.table.setRowCount(0)
+        for row in rows:
+            row_pos = self.table.rowCount()
+            self.table.insertRow(row_pos)
+            
+            # Skip ID column (index 0), show only timestamp, username, action, details
+            self.table.setItem(row_pos, 0, QTableWidgetItem(row[1]))  # timestamp
+            self.table.setItem(row_pos, 1, QTableWidgetItem(row[2]))  # username
+            self.table.setItem(row_pos, 2, QTableWidgetItem(row[3]))  # action
+            self.table.setItem(row_pos, 3, QTableWidgetItem(row[4] or ""))  # details
+
+
+class DeviceHistoryDialog(QDialog):
+    """Dialog to view history/dossier for a specific device or contract (admin only)"""
+    def __init__(self, device_id=None, contract_number=None, parent=None):
+        super().__init__(parent)
+        self.device_id = device_id
+        self.contract_number = contract_number
+        
+        if device_id:
+            self.setWindowTitle(f"История на устройство ID: {device_id}")
+        elif contract_number:
+            self.setWindowTitle(f"История на договор: {contract_number}")
+        else:
+            self.setWindowTitle("История")
+            
+        self.resize(900, 600)
+        
+        self.init_ui()
+        self.load_history()
+        
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # Info label
+        info_label = QLabel("Електронно досие - всички действия и промени:")
+        info_label.setStyleSheet("font-weight: bold; font-size: 14px; margin-bottom: 10px;")
+        layout.addWidget(info_label)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Дата/Час", "Потребител", "Действие", "Детайли"])
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSortingEnabled(True)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(0, 150)
+        self.table.setColumnWidth(1, 120)
+        self.table.setColumnWidth(2, 150)
+        
+        # Enable word wrap for details column
+        self.table.setWordWrap(True)
+        self.table.verticalHeader().setDefaultSectionSize(40)
+        
+        layout.addWidget(self.table)
+        
+        # Close button
+        btn_close = QPushButton("Затвори")
+        btn_close.clicked.connect(self.accept)
+        layout.addWidget(btn_close)
+        
+        self.setLayout(layout)
+    
+    def load_history(self):
+        """Load history from database"""
+        if self.device_id:
+            from database import get_device_history
+            history = get_device_history(self.device_id)
+        elif self.contract_number:
+            from database import get_contract_history
+            history = get_contract_history(self.contract_number)
+        else:
+            history = []
+        
+        self.table.setRowCount(0)
+        for entry in history:
+            row_pos = self.table.rowCount()
+            self.table.insertRow(row_pos)
+            
+            self.table.setItem(row_pos, 0, QTableWidgetItem(entry["timestamp"]))
+            self.table.setItem(row_pos, 1, QTableWidgetItem(entry["username"]))
+            self.table.setItem(row_pos, 2, QTableWidgetItem(entry["action"]))
+            self.table.setItem(row_pos, 3, QTableWidgetItem(entry["details"] or ""))
+        
+        if not history:
+            # Show message if no history
+            row_pos = self.table.rowCount()
+            self.table.insertRow(row_pos)
+            item = QTableWidgetItem("Няма записана история за това устройство/договор")
+            item.setForeground(Qt.GlobalColor.gray)
+            self.table.setItem(row_pos, 0, item)
+            self.table.setSpan(row_pos, 0, 1, 4)

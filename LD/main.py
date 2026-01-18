@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
     QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QLineEdit,
     QCheckBox, QMessageBox, QFileDialog, QStatusBar, QMenu, QToolBar,
-    QSplashScreen, QProgressBar, QLabel, QToolButton
+    QSplashScreen, QProgressBar, QLabel, QToolButton, QDialog
 )
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QAction, QIcon, QPixmap
@@ -17,12 +17,13 @@ from database import (
 from contract_generator import generate_service_contract, generate_nap_xml
 from dialogs import (
     AddDeviceDialog, EditDeviceDialog, AddToExistingContractDialog,
-    ExpiringContractsDialog, SettingsDialog
+    ExpiringContractsDialog, SettingsDialog, LoginDialog
 )
 from importer import import_contracts_simple
 from bim_loader import load_certificates_safe
 from date_utils import format_date_bg
 from path_utils import get_resource_path
+from database import log_action
 
 class SplashScreen(QSplashScreen):
     def __init__(self):
@@ -105,10 +106,11 @@ class MainWindow(QMainWindow):
         
         # Create table
         self.table = QTableWidget()
-        self.table.setColumnCount(13)
+        self.table.setColumnCount(25)
         self.table.setHorizontalHeaderLabels([
-            "ID", "№ Договор", "Статус", "Фирма", "ЕИК", "Адрес", "Адрес на обект", "Модел",
-            "Сериен №", "Изтичане", "Евро", "Град", "Телефон"
+            "ID", "№ Договор", "Статус", "Фирма", "ЕИК", "ДДС", "МОЛ", "Град", "ПК", "Адрес", 
+            "Тел. 1", "Тел. 2", "Старт Договор", "Край Договор", "Име Обект", "Адрес Обект", "Тел. Обект",
+            "Модел", "Сериен №", "ИН на ФУ", "Фис. Памет", "№ Свид. БИМ", "Валидност БИМ", "Евро", "НАП Отчет"
         ])
         
         # Hide ID column
@@ -120,16 +122,28 @@ class MainWindow(QMainWindow):
         # Set column widths
         self.table.setColumnWidth(1, 80)   # Contract
         self.table.setColumnWidth(2, 80)   # Status
-        self.table.setColumnWidth(3, 220)  # Company
+        self.table.setColumnWidth(3, 200)  # Company
         self.table.setColumnWidth(4, 90)   # EIK
-        self.table.setColumnWidth(5, 200)  # Address
-        self.table.setColumnWidth(6, 200)  # Object Address
-        self.table.setColumnWidth(7, 120)  # Model
-        self.table.setColumnWidth(8, 100)  # Serial
-        self.table.setColumnWidth(9, 90)   # Expiry
-        self.table.setColumnWidth(10, 50)  # Euro
-        self.table.setColumnWidth(11, 80)  # City
-        self.table.setColumnWidth(12, 100) # Phone
+        self.table.setColumnWidth(5, 50)   # VAT
+        self.table.setColumnWidth(6, 120)  # MOL
+        self.table.setColumnWidth(7, 80)   # City
+        self.table.setColumnWidth(8, 50)   # Postal
+        self.table.setColumnWidth(9, 200)  # Address
+        self.table.setColumnWidth(10, 90)  # Phone1
+        self.table.setColumnWidth(11, 90)  # Phone2
+        self.table.setColumnWidth(12, 90)  # Start
+        self.table.setColumnWidth(13, 90)  # Expiry
+        self.table.setColumnWidth(14, 120) # Obj Name
+        self.table.setColumnWidth(15, 200) # Obj Addr
+        self.table.setColumnWidth(16, 90)  # Obj Phone
+        self.table.setColumnWidth(17, 120) # Model
+        self.table.setColumnWidth(18, 100) # Serial
+        self.table.setColumnWidth(19, 100) # FDRID
+        self.table.setColumnWidth(20, 100) # FM
+        self.table.setColumnWidth(21, 80)  # Cert
+        self.table.setColumnWidth(22, 90)  # Cert Exp
+        self.table.setColumnWidth(23, 50)  # Euro
+        self.table.setColumnWidth(24, 60)  # NRA
         
         # Double-click to edit
         self.table.doubleClicked.connect(self.edit_selected_device)
@@ -147,6 +161,14 @@ class MainWindow(QMainWindow):
         
         # Load initial data
         self.refresh_table()
+        
+        self.current_user = None
+
+    def set_user(self, user):
+        self.current_user = user
+        if user:
+            self.setWindowTitle(f"Регистър на фискални устройства - Потребител: {user.get('full_name', 'Unknown')}")
+            self.statusBar.showMessage(f"Добре дошли, {user.get('full_name')}!")
     
     def create_toolbar(self):
         """Create application toolbar with themed dropdown menus"""
@@ -223,6 +245,12 @@ class MainWindow(QMainWindow):
         action_expiring.triggered.connect(self.show_expiring_contracts)
         menu_reports.addAction(action_expiring)
         
+        menu_reports.addSeparator()
+        
+        action_nra = QAction("📊 Отчет НАП (Н-18)", self)
+        action_nra.triggered.connect(self.show_nra_report)
+        menu_reports.addAction(action_nra)
+        
         btn_reports.setMenu(menu_reports)
         toolbar.addWidget(btn_reports)
         
@@ -233,11 +261,16 @@ class MainWindow(QMainWindow):
         action_settings.triggered.connect(self.show_settings)
         toolbar.addAction(action_settings)
         
+        # Standalone: Одит
+        action_audit = QAction("📋 Одит", self)
+        action_audit.triggered.connect(self.show_audit_log)
+        toolbar.addAction(action_audit)
+        
         toolbar.addSeparator()
         
         # Standalone: Обнови
         action_refresh = QAction("🔄 Обнови", self)
-        action_refresh.triggered.connect(self.refresh_table)
+        action_refresh.triggered.connect(self.clear_filters)
         toolbar.addAction(action_refresh)
     
     def create_filter_panel(self):
@@ -324,10 +357,11 @@ class MainWindow(QMainWindow):
                 "№ Договор", "Фирма", "Модел", "Сериен №", "Изтичане", "ЕИК", "Телефон"
             ])
         else:
-            self.table.setColumnCount(13)
+            self.table.setColumnCount(25)
             self.table.setHorizontalHeaderLabels([
-                "ID", "№ Договор", "Статус", "Фирма", "ЕИК", "Адрес", "Адрес на обект", "Модел",
-                "Сериен №", "Изтичане", "Евро", "Град", "Телефон"
+                "ID", "№ Договор", "Статус", "Фирма", "ЕИК", "ДДС", "МОЛ", "Град", "ПК", "Адрес", 
+                "Тел. 1", "Тел. 2", "Начална дата", "Крайна дата", "Име на обект", "Адрес на обект", "Тел. Обект",
+                "Модел", "Сериен №", "FDRID", "Номер на ФП", "№ Свидетелство", "Валидност БИМ", "Евро", "НАП Отчет"
             ])
             self.table.setColumnHidden(0, True)
         
@@ -338,13 +372,25 @@ class MainWindow(QMainWindow):
             for col, value in enumerate(row_data):
                 display_value = ""
                 
-                # Euro column
-                if not expiring_mode and col == 10:
-                    display_value = "э" if value else ""
+                # Helper to clean ".0" from likely integer fields imported as floats
+                def clean_float_str(val):
+                    s = str(val) if val is not None else ""
+                    if s.endswith(".0"):
+                        return s[:-2]
+                    return s
+
+                # Euro column (23) and NRA (24)
+                if not expiring_mode and (col == 23 or col == 24):
+                    display_value = "✓" if value else ""
                 
-                # Expiry date column (9 in normal mode, 4 in expiring mode)
-                elif (not expiring_mode and col == 9) or (expiring_mode and col == 4):
+                # Date columns: Contract Start (12), Contract Expiry (13), Cert Expiry (22)
+                elif (not expiring_mode and col in [12, 13, 22]) or (expiring_mode and col == 4):
                     display_value = format_date_bg(value)
+                
+                # Columns that need ".0" cleanup: 
+                # PK (8), FDRID (19), FM (20), Cert Num (21)
+                elif not expiring_mode and col in [8, 19, 20, 21]:
+                    display_value = clean_float_str(value)
                 
                 else:
                     display_value = str(value) if value is not None else ""
@@ -394,6 +440,11 @@ class MainWindow(QMainWindow):
         dialog = AddDeviceDialog(self)
         if dialog.exec():
             self.refresh_table()
+            if self.current_user:
+                # We need to capture the new device ID and contract number for better logging. 
+                # Ideally AddDeviceDialog would return them, but for now we log generic.
+                # Or we can improve AddDeviceDialog later. 
+                log_action(self.current_user['id'], self.current_user['username'], "ADD_DEVICE", "Added new device")
     
     def add_to_existing_contract(self):
         """Open add to existing contract dialog"""
@@ -416,6 +467,10 @@ class MainWindow(QMainWindow):
         dialog = EditDeviceDialog(device_id, self)
         if dialog.exec():
             self.refresh_table()
+            if self.current_user:
+                # Retrieve contract number for logging
+                contract_num = self.table.item(row, 3).text()
+                log_action(self.current_user['id'], self.current_user['username'], "EDIT_DEVICE", f"Edited device ID {device_id}", contract_number=contract_num, device_id=device_id)
     
     def delete_selected_device(self):
         """Delete the selected device"""
@@ -440,6 +495,9 @@ class MainWindow(QMainWindow):
             if delete_device(device_id):
                 QMessageBox.information(self, "Успех", "Устройството е изтрито!")
                 self.refresh_table()
+                if self.current_user:
+                    contract_num = self.table.item(row, 3).text()
+                    log_action(self.current_user['id'], self.current_user['username'], "DELETE_DEVICE", f"Deleted device ID {device_id}", contract_number=contract_num, device_id=device_id)
             else:
                 QMessageBox.critical(self, "Грешка", "Грешка при изтриване!")
     
@@ -465,6 +523,12 @@ class MainWindow(QMainWindow):
         
         menu.addSeparator()
         
+        # History (Admin only)
+        history_action = None
+        if self.current_user and self.current_user.get('role') == 'admin':
+            history_action = menu.addAction("📁 Електронно досие (История)")
+            menu.addSeparator()
+            
         # New copy actions
         copy_cell_action = menu.addAction("📋 Копирай клетка")
         copy_row_action = menu.addAction("📄 Копирай ред")
@@ -480,13 +544,25 @@ class MainWindow(QMainWindow):
         elif action == dereg_action:
             self.generate_deregistration_action()
         elif action == nap_action:
-            self.generate_nap_file()
+            self.run_nap_xml_generation()
         elif action == delete_action:
             self.delete_selected_device()
+        elif history_action and action == history_action:
+            self.show_device_history(index)
         elif action == copy_cell_action:
             self.copy_cell_to_clipboard(index.row(), index.column())
         elif action == copy_row_action:
             self.copy_row_to_clipboard(index.row())
+
+    def show_device_history(self, index):
+        """Show history for the device/contract at the given index"""
+        row = index.row()
+        device_id = int(self.table.item(row, 0).text())
+        contract_num = self.table.item(row, 3).text()
+        
+        from dialogs import DeviceHistoryDialog
+        dialog = DeviceHistoryDialog(device_id=device_id, contract_number=contract_num, parent=self)
+        dialog.exec()
 
     def choose_format_and_open(self, docx_path):
         """Ask user if they want to open DOCX or PDF and handle conversion"""
@@ -545,6 +621,8 @@ class MainWindow(QMainWindow):
             
             out_path = generate_registration_certificate(client_data, device, template, output_dir)
             self.statusBar.showMessage("Свидетелството е генерирано")
+            if self.current_user:
+                log_action(self.current_user['id'], self.current_user['username'], "GEN_CERT", f"Generated certificate for {client_data.get('firm_name')}", device_id=device_id)
             self.choose_format_and_open(out_path)
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{e}")
@@ -597,6 +675,9 @@ class MainWindow(QMainWindow):
             
             QMessageBox.information(self, "Успех", f"XML файлът за НАП е генериран:\n{os.path.basename(xml_path)}")
             
+            if self.current_user:
+                log_action(self.current_user['id'], self.current_user['username'], "GEN_NAP_XML", f"Generated NAP XML for device ID {device_id}", device_id=device_id)
+
             # Open the folder or file
             os.startfile(output_dir)
         except Exception as e:
@@ -630,6 +711,8 @@ class MainWindow(QMainWindow):
                 
                 out_path = generate_deregistration_protocol(data, template, output_dir)
                 self.statusBar.showMessage("Протоколът за дерегистрация е генериран")
+                if self.current_user:
+                    log_action(self.current_user['id'], self.current_user['username'], "GEN_DEREG", "Generated deregistration protocol", device_id=device_id)
                 self.choose_format_and_open(out_path)
             except Exception as e:
                 QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{e}")
@@ -641,7 +724,50 @@ class MainWindow(QMainWindow):
         if os.path.exists(f_path):
             os.startfile(f_path)
         else:
-            QMessageBox.critical(self, "Грешка", f"Файлът не е намерен:\n{f_path}")
+            QMessageBox.warning(self, "Грешка", f"Файлът не е намерен:\n{f_path}")
+
+    def show_nra_report(self):
+        """Open the NRA Report preview dialog"""
+        from dialogs import NraReportDialog
+        dialog = NraReportDialog(self)
+        dialog.exec()
+
+    def run_nra_report_generation(self):
+        """Logic to generate the fiskal.ser file using all flagged devices"""
+        # Load Settings (Service Data)
+        from path_utils import get_app_root
+        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        if not os.path.exists(settings_path):
+            QMessageBox.warning(self, "Внимание", "Моля, първо попълнете данните за сервизния техник в Настройки!")
+            return
+            
+        import json
+        try:
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                service_data = json.load(f)
+        except:
+            QMessageBox.critical(self, "Грешка", "Неуспешно зареждане на настройките.")
+            return
+
+        from database import get_devices_for_nra_report
+        devices = get_devices_for_nra_report()
+        
+        if not devices:
+            QMessageBox.information(self, "Информация", "Няма устройства, маркирани за включване в отчета.")
+            return
+
+        output_dir = os.path.join(get_app_root(), "Generated")
+        os.makedirs(output_dir, exist_ok=True)
+
+        from contract_generator import generate_fiskal_ser
+        try:
+            out_path = generate_fiskal_ser(service_data, devices, output_dir)
+            QMessageBox.information(self, "Успех", f"Отчетът fiskal.ser е генериран успешно в:\n{out_path}")
+            if self.current_user:
+                log_action(self.current_user['id'], self.current_user['username'], "GEN_FISKAL_SER", f"Generated NRA report for {len(devices)} devices")
+            os.startfile(output_dir)
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{e}")
 
     def copy_cell_to_clipboard(self, row, col):
         """Copy single cell text to clipboard"""
@@ -688,6 +814,8 @@ class MainWindow(QMainWindow):
                 self.statusBar.showMessage("Импортиране...")
                 count = import_contracts_simple(filename)
                 self.refresh_table()
+                if self.current_user:
+                    log_action(self.current_user['id'], self.current_user['username'], "IMPORT_DATA", f"Imported {count} records")
                 QMessageBox.information(self, "Успех", f"Импортирани са {count} записа.")
 
     def show_settings(self):
@@ -709,6 +837,17 @@ class MainWindow(QMainWindow):
             result = load_certificates_safe(filename)
             QMessageBox.information(self, "Сертификати", result)
             self.statusBar.showMessage("Готов")
+
+    def show_audit_log(self):
+        """Show audit log viewer dialog (admin only)"""
+        # Check if current user is admin
+        if not self.current_user or self.current_user.get('role') != 'admin':
+            QMessageBox.warning(self, "Грешка", "Само администраторът има достъп до одита!")
+            return
+            
+        from dialogs import AuditLogDialog
+        dialog = AuditLogDialog(self)
+        dialog.exec()
 
 
     def generate_selected_contract(self):
@@ -749,8 +888,16 @@ class MainWindow(QMainWindow):
             if os.path.exists(output_file):
                 os.startfile(output_file)
                 self.statusBar.showMessage(f"Договорът е генериран: {os.path.basename(output_file)}", 5000)
+                if self.current_user:
+                    log_action(self.current_user['id'], self.current_user['username'], 
+                               "GEN_CONTRACT", f"Generated contract {contract_num}", 
+                               contract_number=contract_num)
             else:
                 QMessageBox.information(self, "Успех", f"Договорът беше генериран успешно:\n{output_file}")
+                if self.current_user:
+                    log_action(self.current_user['id'], self.current_user['username'], 
+                               "GEN_CONTRACT", f"Generated contract {contract_num}", 
+                               contract_number=contract_num)
 
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при генериране на договор: {str(e)}")
@@ -788,15 +935,37 @@ def main():
     # Set application style
     app.setStyle('Fusion')
     
-    # Create and show main window
-    window = MainWindow()
+    # Create login dialog
+    login = LoginDialog()
     
-    # Close splash and show main window
-    splash.finish(window)
-    window.show()
+    # Close splash before login or after? 
+    # Usually better to close splash, show login. 
+    # But user wants splash to finish loading first.
+    splash.finish(login) # Use login as the widget to switch to
     
-    sys.exit(app.exec())
+    if login.exec() == QDialog.DialogCode.Accepted:
+        # Create and show main window
+        window = MainWindow()
+        window.set_user(login.user)
+        window.show()
+        sys.exit(app.exec())
+    else:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        with open("crash_log.txt", "w") as f:
+            f.write(traceback.format_exc())
+        
+        # Also try to show message box if QApplication exists
+        try:
+            from PyQt6.QtWidgets import QMessageBox, QApplication
+            if QApplication.instance():
+                QMessageBox.critical(None, "Fatal Error", f"Fatal error:\n{str(e)}")
+        except:
+            pass
+        sys.exit(1)
