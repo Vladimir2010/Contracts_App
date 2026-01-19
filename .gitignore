@@ -31,3 +31,32 @@ debug_*.txt
 test_output.*
 
 /Fiscal/
+/build/
+/Contracts_App_Web/
+/Contracts_App_Web_Pro/
+/ContractsAppPro_Final/
+/ContractsAppPro_Installer/
+/dist/
+/Protocols-Generator-service/
+/test_output/
+/test_output/RepairProtocol_1_ZK123456_Тест Фирма ЕООД.docx
+/НАП файл/
+/Contracts_App_Pro/src_backup/
+/data/contracts.db.bak
+/Generated/DeregProtocol_DТ 409025.pdf
+/Generated/fiskal.ser
+/Generated/NAP_20260115_220722.xml
+/Generated/NAP_20260115_221227.xml
+/Generated/RegCert_DY 418140.pdf
+/Generated/RegCert_DТ 409025.pdf
+/Generated/RegCert_ZK 666666.pdf
+/Generated/RegCert_ZК 154163.pdf
+/result-check-fiskal.txt
+/result-check-fiskal-2.txt
+/fiskal.ser
+/ContractsAppPro.zip
+/ContractsApp.zip
+/Contracts_App_Pro.zip
+/CAppPro_Installer.exe
+/Contracts_App_Pro/data/contracts.db.bak
+/Contracts_App_Pro/Generated/

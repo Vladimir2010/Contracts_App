@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1178, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1168, in main
+    window = MainWindow()
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 95, in __init__
+    self.tabs = QTabWidget()
+                ^^^^^^^^^^
+NameError: name 'QTabWidget' is not defined. Did you mean: 'QTableWidget'?
