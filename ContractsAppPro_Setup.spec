@@ -5,7 +5,7 @@ a = Analysis(
     ['pro_installer.py'],
     pathex=[],
     binaries=[],
-    datas=[('ContractsAppPro.zip', '.'), ('Contracts_App_Pro/resources/vladpos_logo.png', '.')],
+    datas=[],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

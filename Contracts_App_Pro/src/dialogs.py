@@ -136,6 +136,10 @@ class AddDeviceDialog(QDialog):
         
         self.serial_number = QLineEdit()
         self.fiscal_memory = QLineEdit()
+        self.maintenance_price = QDoubleSpinBox()
+        self.maintenance_price.setRange(0, 10000)
+        self.maintenance_price.setSuffix(" лв.")
+        self.maintenance_price.setValue(0)
         
         device_layout.addRow("FDRID:", self.fdrid)
         device_layout.addRow("", self.euro_done)
@@ -148,6 +152,7 @@ class AddDeviceDialog(QDialog):
         device_layout.addRow("Изтичане свидетелство:", self.certificate_expiry)
         device_layout.addRow("Сериен номер:", self.serial_number)
         device_layout.addRow("№ Фискална памет:", self.fiscal_memory)
+        device_layout.addRow("Дежурна такса:", self.maintenance_price)
         
         # Connect phone formatting
         self.phone1.editingFinished.connect(lambda: self.format_phone(self.phone1))
@@ -426,7 +431,8 @@ class AddDeviceDialog(QDialog):
                 'nra_report_month': self.nra_report_month.text().strip(),
                 'nra_td': self.nra_td.currentText().strip(),
                 'bim_model': self.bim_model.text().strip(),
-                'bim_date': self.bim_date.date().toString('yyyy-MM-dd')
+                'bim_date': self.bim_date.date().toString('yyyy-MM-dd'),
+                'maintenance_price': self.maintenance_price.value()
             }
             
             # Add to database
@@ -748,6 +754,10 @@ class EditDeviceDialog(QDialog):
         
         self.serial_number = QLineEdit(device_data.get('serial_number', ''))
         self.fiscal_memory = QLineEdit(device_data.get('fiscal_memory', ''))
+        self.maintenance_price = QDoubleSpinBox()
+        self.maintenance_price.setRange(0, 10000)
+        self.maintenance_price.setSuffix(" лв.")
+        self.maintenance_price.setValue(device_data.get('maintenance_price', 0))
         
         device_layout.addRow("FDRID:", self.fdrid)
         device_layout.addRow("", self.euro_done)
@@ -759,6 +769,7 @@ class EditDeviceDialog(QDialog):
         device_layout.addRow("Изтичане свидетелство:", self.certificate_expiry)
         device_layout.addRow("Сериен номер:", self.serial_number)
         device_layout.addRow("№ Фискална памет:", self.fiscal_memory)
+        device_layout.addRow("Дежурна такса:", self.maintenance_price)
         
         # Connect phone formatting
         self.phone1.editingFinished.connect(lambda: self.format_phone(self.phone1))
@@ -984,7 +995,8 @@ class EditDeviceDialog(QDialog):
                 'nra_report_month': self.nra_report_month.text().strip(),
                 'nra_td': self.nra_td.currentText().strip(),
                 'bim_model': self.bim_model.text().strip(),
-                'bim_date': self.bim_date.date().toString('yyyy-MM-dd')
+                'bim_date': self.bim_date.date().toString('yyyy-MM-dd'),
+                'maintenance_price': self.maintenance_price.value()
             }
             
             if update_device(self.device_id, client_data, device_data):
@@ -1599,6 +1611,11 @@ class SettingsDialog(QDialog):
             self.tab_users = QWidget()
             self.init_users_tab()
             self.tabs.addTab(self.tab_users, "Потребители")
+            
+            # Tab 5: Database Administration
+            self.tab_db = QWidget()
+            self.init_db_admin_tab()
+            self.tabs.addTab(self.tab_db, "База Данни")
         
         layout.addWidget(self.tabs)
         
@@ -1920,6 +1937,129 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при запис:\n{e}")
+
+    def init_db_admin_tab(self):
+        """Database Administration tab for restore and reset"""
+        main_layout = QVBoxLayout()
+        
+        # Restore Section
+        restore_group = QWidget()
+        restore_layout = QVBoxLayout()
+        restore_group.setLayout(restore_layout)
+        
+        label_restore = QLabel("<b>Възстановяване от Backup</b>")
+        restore_layout.addWidget(label_restore)
+        
+        row_file = QHBoxLayout()
+        self.restore_path_label = QLineEdit()
+        self.restore_path_label.setPlaceholderText("Изберете .zip файл...")
+        self.restore_path_label.setReadOnly(True)
+        btn_browse = QPushButton("📁 Избери файл")
+        btn_browse.clicked.connect(self.browse_backup)
+        row_file.addWidget(self.restore_path_label)
+        row_file.addWidget(btn_browse)
+        restore_layout.addLayout(row_file)
+        
+        btn_restore = QPushButton("✅ Възстанови базата")
+        btn_restore.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; padding: 5px;")
+        btn_restore.clicked.connect(self.run_restore)
+        restore_layout.addWidget(btn_restore)
+        
+        main_layout.addWidget(restore_group)
+        main_layout.addSpacing(20)
+        
+        # Reset Section (Super Admin only)
+        if self.user and self.user.get('username') == 'vladpos':
+            reset_group = QWidget()
+            reset_group.setObjectName("dangerZone")
+            reset_group.setStyleSheet("QWidget#dangerZone { background-color: #fff5f5; border: 2px solid #ff4d4d; border-radius: 5px; padding: 10px; }")
+            reset_layout = QVBoxLayout()
+            reset_group.setLayout(reset_layout)
+            
+            label_reset = QLabel("<b>⚠️ КРИТИЧНО: Изчистване на базата</b>")
+            label_reset.setStyleSheet("color: #d73a49; font-size: 14px;")
+            reset_layout.addWidget(label_reset)
+            
+            txt_reset = QLabel("Това ще изтрие всички договори, устройства и клиенти! Супер администраторът 'vladpos' ще бъде съхранен автоматично.")
+            txt_reset.setWordWrap(True)
+            reset_layout.addWidget(txt_reset)
+            
+            self.confirm_reset_check = QCheckBox("Разбирам последствията и искам да изтрия базата")
+            reset_layout.addWidget(self.confirm_reset_check)
+            
+            btn_reset = QPushButton("🗑️ ИЗТРИЙ ЦЯЛАТА БАЗА ДАННИ")
+            btn_reset.setStyleSheet("background-color: #dc3545; color: white; font-weight: bold; padding: 8px;")
+            btn_reset.clicked.connect(self.run_reset)
+            reset_layout.addWidget(btn_reset)
+            
+            main_layout.addWidget(reset_group)
+        
+        main_layout.addStretch()
+        self.tab_db.setLayout(main_layout)
+
+    def browse_backup(self):
+        """Browse for a backup ZIP file"""
+        from path_utils import get_app_root
+        backups_dir = os.path.join(get_app_root(), "backups")
+        if not os.path.exists(backups_dir):
+            backups_dir = os.getcwd()
+            
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Изберете бекъп файл", backups_dir, "Backup files (*.zip)"
+        )
+        if file_path:
+            self.restore_path_label.setText(file_path)
+
+    def run_restore(self):
+        """Restore DB from backup"""
+        path = self.restore_path_label.text()
+        if not path:
+            QMessageBox.warning(self, "Грешка", "Моля, изберете файл първо!")
+            return
+            
+        confirm = QMessageBox.question(
+            self, "Потвърждение",
+            "ВНИМАНИЕ: Сегашните данни ще бъдат заменени с тези от архива!\nСигурни ли сте?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            from database import restore_database_from_backup
+            success, message = restore_database_from_backup(path)
+            
+            if success:
+                QMessageBox.information(self, "Успех", message + "\nПриложението ще се рестартира сега.")
+                # Force restart
+                import os
+                import sys
+                os.execl(sys.executable, sys.executable, *sys.argv)
+            else:
+                QMessageBox.critical(self, "Грешка", message)
+
+    def run_reset(self):
+        """Clear the database"""
+        if not self.confirm_reset_check.isChecked():
+            QMessageBox.warning(self, "Внимание", "Моля, потвърдете че разбирате последствията чрез отметката!")
+            return
+            
+        confirm = QMessageBox.critical(
+            self, "ПОСЛЕДНО ПОТВЪРЖДЕНИЕ",
+            "АБСОЛЮТНО СИГУРНИ ЛИ СТЕ?\nВсички данни ще бъдат изтрити невъзвратимо!",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            from database import reset_database
+            success, message = reset_database()
+            
+            if success:
+                QMessageBox.information(self, "Успех", message + "\nПриложението ще се рестартира.")
+                # Force restart
+                import os
+                import sys
+                os.execl(sys.executable, sys.executable, *sys.argv)
+            else:
+                QMessageBox.critical(self, "Грешка", message)
 
 
 class NraReportDialog(QDialog):
@@ -2379,5 +2519,48 @@ class ProductDialog(QDialog):
                     QMessageBox.warning(self, "Грешка", "Грешка при запис.")
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при базата данни: {str(e)}")
+
+
+class DuplicatePassportDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Заявление за дубликат")
+        self.setFixedSize(400, 200)
+        self.manufacturer = None
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        form = QFormLayout()
+        self.combo_manu = QComboBox()
+        self.combo_manu.addItems(["Daisy", "Tremol", "Datecs"])
+        
+        form.addRow("Производител:", self.combo_manu)
+        
+        layout.addLayout(form)
+        
+        info = QLabel("Ще бъде генерирано заявление за дубликат на паспорт\nспоред избрания производител.")
+        info.setStyleSheet("color: gray; font-style: italic;")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+        
+        layout.addStretch()
+        
+        btns = QHBoxLayout()
+        btn_gen = QPushButton("Генерирай")
+        btn_gen.clicked.connect(self.accept_data)
+        btn_cancel = QPushButton("Отказ")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btns.addWidget(btn_gen)
+        btns.addWidget(btn_cancel)
+        
+        layout.addLayout(btns)
+        self.setLayout(layout)
+
+    def accept_data(self):
+        self.manufacturer = self.combo_manu.currentText()
+        self.accept()
 
 

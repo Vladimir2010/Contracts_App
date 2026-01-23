@@ -1062,3 +1062,182 @@ def generate_price_list(products: List[Dict[str, Any]], format_type: int, output
     return output_path
 
 
+def get_service_data():
+    """Try to load service firm data from settings.json or return placeholders"""
+    settings_path = os.path.join(get_app_root(), "data", "settings.json")
+    if not os.path.exists(settings_path):
+        # Fallback to root
+        settings_path = os.path.join(get_app_root(), "settings.json")
+    
+    defaults = {
+        "name": "---", "eik": "---", "vat": "---", "address": "---", 
+        "mol": "---", "city": "", "phone1": "", "phone2": ""
+    }
+    
+    if os.path.exists(settings_path):
+        try:
+            import json
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Ensure keys exist
+                for k, v in defaults.items():
+                    if k not in data: data[k] = v
+                return data
+        except:
+            pass
+            
+    return defaults
+
+def generate_duplicate_passport(client_data, device_data, manufacturer, template_name, output_dir):
+    """
+    Generate Duplicate Passport application.
+    Manufacturer: 'Daisy', 'Tremol', 'Datecs'
+    """
+    from path_utils import get_resource_path, get_app_root
+    
+    # Check if template name is full path or just name
+    if os.path.isabs(template_name):
+        template_path = template_name
+    else:
+        # Try multiple locations:
+        # 1. Project root (main folder)
+        root_path = os.path.join(get_app_root(), "..", template_name)
+        # 2. Resources folder
+        resource_path = get_resource_path(template_name)
+        # 3. Templates subfolder in resources
+        templates_path = get_resource_path(os.path.join('templates', template_name))
+        
+        # Check which one exists
+        if os.path.exists(root_path):
+            template_path = root_path
+        elif os.path.exists(resource_path):
+            template_path = resource_path
+        elif os.path.exists(templates_path):
+            template_path = templates_path
+        else:
+            raise FileNotFoundError(f"Template not found: {template_name}")
+
+    doc = Document(template_path)
+    
+    # helper for clean strings
+    def cs(val): return str(val) if val else "---"
+    def clean_eik(val): return str(val).strip() if val else "---"
+
+    # Client Data
+    c_name = cs(client_data.get('company_name'))
+    c_eik = clean_eik(client_data.get('eik'))
+    c_vat_reg = client_data.get('vat_registered')
+    # If VAT registered (often marked as 'Yes' or '1' or 'BG...')
+    # User said: "if there is VAT registration put BG in front"
+    
+    final_c_eik = c_eik
+    # Heuristic: if vat_registered column is populated with "True", "Yes", "1" or a number starting with BG
+    is_vat = False
+    if c_vat_reg:
+        s_vat = str(c_vat_reg).upper().strip()
+        if s_vat not in ['0', 'FALSE', 'NO', 'NONE', '']:
+            is_vat = True
+            
+    if is_vat:
+        if not final_c_eik.startswith("BG"):
+            final_c_eik = "BG" + final_c_eik
+    
+    c_addr = cs(client_data.get('address'))
+    c_mol = cs(client_data.get('mol'))
+    
+    # Device Data
+    d_model = cs(device_data.get('model'))
+    d_sn = cs(device_data.get('serial_number'))
+    # Clean fiscal memory - remove .0 if present
+    fm_raw = device_data.get('fiscal_memory')
+    if fm_raw:
+        fm_str = str(fm_raw)
+        if fm_str.endswith('.0'):
+            d_fm = fm_str[:-2]
+        else:
+            d_fm = fm_str
+    else:
+        d_fm = "---"
+    
+    # Service Data
+    srv = get_service_data()
+    s_name = cs(srv.get('name'))
+    s_addr = f"{cs(srv.get('city'))}, {cs(srv.get('address'))}"
+    s_mol = cs(srv.get('mol'))
+    
+    s_eik_raw = clean_eik(srv.get('eik'))
+    s_vat_raw = srv.get('vat', '')
+    
+    # Check if service is VAT registered
+    final_s_eik = s_eik_raw
+    if s_vat_raw and str(s_vat_raw).upper().startswith("BG"):
+         if not final_s_eik.startswith("BG"):
+            final_s_eik = "BG" + final_s_eik
+            
+    # MAPPINGS
+    mappings = {}
+    
+    # Common 1-6 for all (Datecs logic for 1-6 seems same as others?)
+    # Datecs: 1-Model, 2-SN, 3-FM, 4-CoName, 5-CoEIK, 6-CoAddr
+    # Daisy/Tremol: 1-Model, 2-SN, 3-FM, 4-CoName, 5-CoEIK, 6-CoAddr
+    
+    mappings["{1}"] = d_model
+    mappings["{2}"] = d_sn
+    mappings["{3}"] = d_fm
+    mappings["{4}"] = c_name
+    mappings["{5}"] = final_c_eik
+    mappings["{6}"] = c_addr
+    
+    if manufacturer in ['Daisy', 'Tremol']:
+        # 7 - Comp MOL
+        mappings["{7}"] = c_mol
+        # 8 - Service Name
+        mappings["{8}"] = s_name
+        # 9 - Service EIK (BG)
+        mappings["{9}"] = final_s_eik
+        # 10 - Service Addr
+        mappings["{10}"] = s_addr
+        # 11 - Service MOL
+        mappings["{11}"] = s_mol
+        
+    elif manufacturer == 'Datecs':
+        # 7 - Service Name
+        mappings["{7}"] = s_name
+        # 8 - Service EIK
+        mappings["{8}"] = final_s_eik
+        # 9 - Service Addr
+        mappings["{9}"] = s_addr
+        # 10 - Service MOL
+        mappings["{10}"] = s_mol
+        # Note: Client MOL is not used in Datecs mapping provided by user
+        
+    # Apply replacements
+    for ph, val in mappings.items():
+        replace_text_all(doc, ph, clean_xml_string(val))
+    
+    # Filename: Dublikat_Pasport_(serial number).docx
+    ext = os.path.splitext(template_path)[1]
+    if not ext: ext = ".docx"
+    
+    # Robust saving: if file is open, try adding a number
+    output_filename = f"Dublikat_Pasport_{d_sn}{ext}"
+    output_path = os.path.join(output_dir, output_filename)
+    
+    count = 1
+    while True:
+        try:
+            doc.save(output_path)
+            break
+        except PermissionError:
+            # File is likely open in Word
+            output_filename = f"Dublikat_Pasport_{d_sn}_{count}{ext}"
+            output_path = os.path.join(output_dir, output_filename)
+            count += 1
+            if count > 10: # Safety break
+                raise PermissionError("Не може да се запише файлът. Моля затворете Word и опитайте отново.")
+        except Exception as e:
+            raise e
+            
+    return output_path
+
+

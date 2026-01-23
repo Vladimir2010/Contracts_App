@@ -1,5 +1,6 @@
 import sys
 import os
+from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
@@ -14,19 +15,85 @@ from PyQt6.QtGui import QAction, QIcon, QPixmap, QDesktopServices
 from database import (
     init_db, get_all_devices, search_devices, delete_device,
     get_client_by_contract, get_devices_by_contract,
-    get_all_products, search_products, delete_product
+    get_all_products, search_products, delete_product, get_db_stats
 )
 from contract_generator import generate_service_contract, generate_nap_xml
 from dialogs import (
     AddDeviceDialog, EditDeviceDialog, AddToExistingContractDialog,
     ExpiringContractsDialog, SettingsDialog, LoginDialog, RepairProtocolDialog,
-    ProductDialog
+    ProductDialog, DuplicatePassportDialog
 )
 from importer import import_contracts_simple
 from bim_loader import load_certificates_safe
 from date_utils import format_date_bg
 from path_utils import get_resource_path
 from database import log_action
+
+class SplashScreen(QSplashScreen):
+    def __init__(self):
+        # Create a background pixmap (canvas)
+        canvas_width = 700
+        canvas_height = 500
+        pixmap = QPixmap(canvas_width, canvas_height)
+        pixmap.fill(Qt.GlobalColor.white)
+        
+        super().__init__(pixmap)
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
+        
+        # Paths to images safely via utility
+        logo_path = get_resource_path('logo-d-d.jpg')
+        
+        # Title Label
+        self.titleLabel = QLabel("Регистър на\nфискални устройства", self)
+        self.titleLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.titleLabel.setStyleSheet("font-size: 32px; font-weight: bold; color: #2c3e50; margin-top: 20px;")
+        self.titleLabel.setGeometry(0, 30, canvas_width, 100)
+        
+        # Logo Label
+        self.logoLabel = QLabel(self)
+        if os.path.exists(logo_path):
+            original_pixmap = QPixmap(logo_path)
+            scaled_logo = original_pixmap.scaled(350, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self.logoLabel.setPixmap(scaled_logo)
+            self.logoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Center the logo in the middle of the remaining space
+            logo_x = (canvas_width - scaled_logo.width()) // 2
+            logo_y = 150 # Starting after title
+
+def backup_database():
+    """Backup database to backups/ folder (zipped)"""
+    try:
+        from database import DB_PATH
+        import zipfile
+        
+        if not os.path.exists(DB_PATH):
+            return
+
+        backup_dir = os.path.join(os.path.dirname(DB_PATH), "..", "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # Limit backups? (Optional, maybe keep last 30)
+        
+        now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_name = f"contracts_backup_{now_str}.zip"
+        zip_path = os.path.join(backup_dir, zip_name)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            zf.write(DB_PATH, os.path.basename(DB_PATH))
+            
+        print(f"Database backed up to {zip_path}")
+        
+        
+        # Cleanup old backups (keep last 50)
+        backups = sorted([os.path.join(backup_dir, f) for f in os.listdir(backup_dir) if f.endswith('.zip')])
+        if len(backups) > 50:
+            for old in backups[:-50]:
+                try: os.remove(old)
+                except: pass
+                
+    except Exception as e:
+        print(f"Backup failed: {e}")
+
 
 class SplashScreen(QSplashScreen):
     def __init__(self):
@@ -109,6 +176,12 @@ class MainWindow(QMainWindow):
         self.product_tab = QWidget()
         self.setup_product_tab()
         self.tabs.addTab(self.product_tab, "📦 Продукти")
+        
+        # Tab 3: Statistics
+        self.stats_tab = QWidget()
+        self.setup_stats_tab()
+        self.tabs.addTab(self.stats_tab, "📊 Статистика")
+        self.tabs.currentChanged.connect(self.on_tab_changed)
         
         # Status bar
         self.statusBar = QStatusBar()
@@ -194,6 +267,105 @@ class MainWindow(QMainWindow):
         self.product_table.customContextMenuRequested.connect(self.show_product_context_menu)
         
         layout.addWidget(self.product_table)
+
+    def setup_stats_tab(self):
+        layout = QVBoxLayout()
+        self.stats_tab.setLayout(layout)
+        
+        # Scroll area for stats
+        from PyQt6.QtWidgets import QScrollArea, QFrame, QGridLayout
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        
+        container = QWidget()
+        container_layout = QVBoxLayout(container)
+        
+        # 1. SUMMARY CARDS
+        cards_layout = QGridLayout()
+        
+        self.card_active = self.create_stat_card("Активни договори", "0", "#2ecc71")
+        self.card_expired = self.create_stat_card("Изтекли договори", "0", "#e74c3c")
+        self.card_expiring = self.create_stat_card("Изтичащи (30 дни)", "0", "#f39c12")
+        self.card_revenue = self.create_stat_card("Прогнозен месечен приход", "0.00 лв.", "#3498db")
+        
+        cards_layout.addWidget(self.card_active, 0, 0)
+        cards_layout.addWidget(self.card_expired, 0, 1)
+        cards_layout.addWidget(self.card_expiring, 1, 0)
+        cards_layout.addWidget(self.card_revenue, 1, 1)
+        
+        container_layout.addLayout(cards_layout)
+        
+        # 2. DEVICE DISTRIBUTION
+        dist_group = QGroupBox("Разпределение по модел")
+        dist_layout = QVBoxLayout()
+        self.dist_label = QLabel("Зареждане...")
+        dist_layout.addWidget(self.dist_label)
+        dist_group.setLayout(dist_layout)
+        container_layout.addWidget(dist_group)
+        
+        # Refresh button
+        btn_refresh = QPushButton("🔄 Обнови Статистиката")
+        btn_refresh.setFixedWidth(200)
+        btn_refresh.clicked.connect(self.refresh_stats)
+        container_layout.addWidget(btn_refresh, 0, Qt.AlignmentFlag.AlignCenter)
+        
+        container_layout.addStretch()
+        
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+    def create_stat_card(self, title, value, color):
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{
+                background-color: white;
+                border-radius: 10px;
+                border: 1px solid #dee2e6;
+                padding: 20px;
+            }}
+        """)
+        card_layout = QVBoxLayout(card)
+        
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet("color: #6c757d; font-size: 14px; font-weight: bold;")
+        
+        lbl_value = QLabel(value)
+        lbl_value.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: bold;")
+        lbl_value.setObjectName("value_label")
+        
+        card_layout.addWidget(lbl_title)
+        card_layout.addWidget(lbl_value)
+        
+        return card
+
+    def refresh_stats(self):
+        try:
+            stats = get_db_stats()
+            
+            # Update cards
+            self.card_active.findChild(QLabel, "value_label").setText(str(stats['active_contracts']))
+            self.card_expired.findChild(QLabel, "value_label").setText(str(stats['expired_contracts']))
+            self.card_expiring.findChild(QLabel, "value_label").setText(str(stats['expiring_soon']))
+            self.card_revenue.findChild(QLabel, "value_label").setText(f"{stats['monthly_revenue']:.2f} лв.")
+            
+            # Update distribution
+            dist_text = ""
+            for model, count in stats['model_dist'].items():
+                percentage = (count / stats['total_devices'] * 100) if stats['total_devices'] > 0 else 0
+                dist_text += f"<b>{model}</b>: {count} бр. ({percentage:.1f}%)\n"
+            
+            if not dist_text:
+                dist_text = "Няма данни за устройства."
+                
+            self.dist_label.setText(dist_text)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при зареждане на статистика: {str(e)}")
+
+    def on_tab_changed(self, index):
+        if index == 2: # Statistics tab
+            self.refresh_stats()
 
     def refresh_products(self):
         query = self.product_search.text().strip()
@@ -404,6 +576,10 @@ class MainWindow(QMainWindow):
         action_repair = QAction("🔧 Протокол за ремонт", self)
         action_repair.triggered.connect(self.generate_repair_protocol_action)
         menu_docs.addAction(action_repair)
+        
+        action_duplicate = QAction("📄 Заявление за дубликат", self)
+        action_duplicate.triggered.connect(self.generate_duplicate_action)
+        menu_docs.addAction(action_duplicate)
         
         btn_docs.setMenu(menu_docs)
         toolbar.addWidget(btn_docs)
@@ -723,7 +899,9 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         nap_action = menu.addAction("📡 Направи файл за НАП")
         menu.addSeparator()
+        menu.addSeparator()
         repair_action = menu.addAction("🔧 Протокол за ремонт")
+        duplicate_action = menu.addAction("📄 Заявление за дубликат")
         menu.addSeparator()
         delete_action = menu.addAction("🗑️ Изтриване")
         
@@ -753,6 +931,8 @@ class MainWindow(QMainWindow):
             self.generate_nap_file()
         elif action == repair_action:
             self.generate_repair_protocol_action()
+        elif action == duplicate_action:
+            self.generate_duplicate_action()
         elif action == delete_action:
             self.delete_selected_device()
         elif history_action and action == history_action:
@@ -1124,6 +1304,57 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Грешка", f"Грешка при генериране на договор: {str(e)}")
 
 
+    def generate_duplicate_action(self):
+        """Generate Duplicate Passport Application"""
+        selected_rows = self.table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(self, "Внимание", "Моля, изберете устройство!")
+            return
+            
+        row = selected_rows[0].row()
+        item = self.table.item(row, 0)
+        device_id = item.data(Qt.ItemDataRole.UserRole)
+        
+        from database import get_device_full
+        
+        full_data = get_device_full(device_id)
+        if not full_data:
+            QMessageBox.warning(self, "Грешка", "Не може да се зареди информацията за устройството.")
+            return
+
+        dlg = DuplicatePassportDialog(self)
+        if dlg.exec():
+            manufacturer = dlg.manufacturer
+            
+            # Map manufacturer to template file
+            templates = {
+                "Daisy": "Dublikat_passport_Daisy.docx",
+                "Tremol": "Dublikat_passport_Tremol.docx",
+                "Datecs": "Dublikat_passport_Datecs.docx"
+            }
+            
+            t_name = templates.get(manufacturer)
+            
+            try:
+                from contract_generator import generate_duplicate_passport
+                
+                # Output folder
+                output_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "Generated", "Duplicates")
+                if not os.path.exists(output_dir): os.makedirs(output_dir)
+                
+                # Use full_data as both client and device data
+                out_path = generate_duplicate_passport(full_data, full_data, manufacturer, t_name, output_dir)
+                
+                self.statusBar.showMessage("Заявлението за дубликат е генерирано")
+                if self.current_user:
+                    log_action(self.current_user['id'], self.current_user['username'], 
+                               "GEN_DUPLICATE", f"Generated duplicate passport for {full_data.get('company_name')}", 
+                               device_id=device_id)
+                self.choose_format_and_open(out_path)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{str(e)}")
+
 def main():
     # Create application
     app = QApplication(sys.argv)
@@ -1153,6 +1384,9 @@ def main():
     # Initialize database
     init_db()
     
+    # Run Backup BEFORE showing UI
+    backup_database()
+    
     # Set application style
     app.setStyle('Fusion')
     
@@ -1169,6 +1403,7 @@ def main():
         window = MainWindow()
         window.set_user(login.user)
         window.show()
+        
         sys.exit(app.exec())
     else:
         sys.exit(0)

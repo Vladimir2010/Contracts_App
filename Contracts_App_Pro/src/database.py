@@ -113,6 +113,7 @@ def init_db():
     if cur.fetchone()[0] == 0:
         try:
             from auth import hash_password
+            from super_admin_manager import save_super_admin
             # Default creds: vladpos / V!adp0s
             pwd_hash = hash_password("V!adp0s")
             cur.execute("""
@@ -120,6 +121,9 @@ def init_db():
                 VALUES (?, ?, ?)
             """, ("vladpos", pwd_hash, "Администратор"))
             con.commit()
+            
+            # Save super admin to encrypted storage
+            save_super_admin("vladpos", pwd_hash, "Администратор")
         except Exception as e:
             print(f"Error creating default user: {e}")
     
@@ -134,7 +138,9 @@ def init_db():
         ("nra_report_month", "TEXT"),
         ("nra_td", "TEXT DEFAULT 'СОФИЯ'"),
         ("bim_model", "TEXT"),
-        ("bim_date", "DATE")
+        ("bim_date", "DATE"),
+        ("maintenance_price", "REAL DEFAULT 0"),
+        ("last_renewed_at", "DATE")
     ]
     
     for col_name, col_type in new_cols:
@@ -320,8 +326,9 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
             client_id, fdrid, euro_done, object_name, object_address,
             object_phone, model, certificate_number, certificate_expiry,
             serial_number, fiscal_memory,
-            nra_report_enabled, nra_report_month, nra_td, bim_model, bim_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            nra_report_enabled, nra_report_month, nra_td, bim_model, bim_date,
+            maintenance_price, last_renewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         client_id,
         data.get('fdrid'),
@@ -338,7 +345,9 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
         data.get('nra_report_month', datetime.now().strftime('%m.%Y')),
         data.get('nra_td', 'СОФИЯ'),
         data.get('bim_model'),
-        data.get('bim_date')
+        data.get('bim_date'),
+        data.get('maintenance_price', 0),
+        datetime.now().strftime('%Y-%m-%d')
     ))
     
     device_id = cur.lastrowid
@@ -392,6 +401,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
             object_phone = ?, model = ?, certificate_number = ?, certificate_expiry = ?,
             serial_number = ?, fiscal_memory = ?,
             nra_report_enabled = ?, nra_report_month = ?, nra_td = ?, bim_model = ?, bim_date = ?,
+            maintenance_price = ?,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (
@@ -410,6 +420,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         device_data.get('nra_td'),
         device_data.get('bim_model'),
         device_data.get('bim_date'),
+        device_data.get('maintenance_price', 0),
         device_id
     ))
     
@@ -446,7 +457,7 @@ def get_device_full(device_id: int) -> Optional[Dict[str, Any]]:
             d.object_phone, d.model, d.certificate_number, d.certificate_expiry,
             d.serial_number, d.fiscal_memory,
             d.nra_report_enabled, d.nra_report_month, d.nra_td, d.bim_model, d.bim_date,
-            d.created_at, d.updated_at
+            d.created_at, d.updated_at, d.maintenance_price, d.last_renewed_at
         FROM devices d
         JOIN clients c ON c.id = d.client_id
         WHERE d.id = ?
@@ -468,7 +479,9 @@ def get_device_full(device_id: int) -> Optional[Dict[str, Any]]:
             'serial_number': row[23], 'fiscal_memory': row[24],
             'nra_report_enabled': bool(row[25]), 'nra_report_month': row[26],
             'nra_td': row[27], 'bim_model': row[28], 'bim_date': row[29],
-            'created_at': row[30], 'updated_at': row[31]
+            'created_at': row[30], 'updated_at': row[31],
+            'maintenance_price': row[32] if len(row) > 32 else 0,
+            'last_renewed_at': row[33] if len(row) > 33 else None
         }
     return None
 
@@ -1034,4 +1047,124 @@ def search_products(query: str) -> List[Dict[str, Any]]:
         })
     return products
 
+def restore_database_from_backup(backup_path):
+    """
+    Restore database from a ZIP backup file.
+    """
+    import zipfile
+    import shutil
+    import os
+    from path_utils import get_app_root
+    
+    app_root = get_app_root()
+    db_path = os.path.join(app_root, "data", "contracts.db")
+    
+    try:
+        if not os.path.exists(backup_path):
+            return False, "Файлът на бекъпа не съществува."
+            
+        # Create a safety backup of current DB
+        safety_path = db_path + ".safety"
+        if os.path.exists(db_path):
+            shutil.copy2(db_path, safety_path)
+            
+        with zipfile.ZipFile(backup_path, 'r') as zip_ref:
+            # Look for contracts.db inside the zip
+            if 'contracts.db' in zip_ref.namelist():
+                zip_ref.extract('contracts.db', os.path.join(app_root, "data"))
+                return True, "Базата данни е възстановена успешно."
+            else:
+                return False, "В архива не беше намерен файл contracts.db."
+    except Exception as e:
+        return False, f"Грешка при възстановяване: {str(e)}"
 
+def reset_database():
+    """
+    Clear all data from the database but preserve the super admin.
+    """
+    import os
+    from path_utils import get_app_root
+    from super_admin_manager import load_super_admin
+    
+    app_root = get_app_root()
+    db_path = os.path.join(app_root, "data", "contracts.db")
+    
+    try:
+        # 1. Load super admin from encrypted storage
+        admin_data = load_super_admin()
+        if not admin_data:
+            return False, "Не бе намерена информация за супер администратора."
+            
+        # 2. Delete current DB
+        if os.path.exists(db_path):
+            # We might need to ensure connections are closed, but in this app 
+            # we usually open/close per operation or rely on the fact that 
+            # this will be called from a controlled state.
+            os.remove(db_path)
+            
+        # 3. Re-initialize empty DB
+        init_db()
+        
+        # 4. Restore super admin into the fresh DB
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        
+        # Check if vladpos already exists (init_db might have created it)
+        cur.execute("SELECT id FROM users WHERE username = 'vladpos'")
+        existing = cur.fetchone()
+        
+        if existing:
+            cur.execute("""
+                UPDATE users SET password_hash = ?, full_name = ? WHERE username = 'vladpos'
+            """, (admin_data['password_hash'], admin_data['full_name']))
+        else:
+            cur.execute("""
+                INSERT INTO users (username, password_hash, full_name, role)
+                VALUES (?, ?, ?, 'admin')
+            """, (admin_data['username'], admin_data['password_hash'], admin_data['full_name']))
+            
+        con.commit()
+        con.close()
+        
+        return True, "Базата данни бе изчистена успешно. Супер администраторът е запазен."
+    except Exception as e:
+        return False, f"Грешка при изтриване на базата: {str(e)}"
+
+
+def get_db_stats() -> Dict[str, Any]:
+    """Calculate various statistics from the database"""
+    con = get_connection()
+    cur = con.cursor()
+    
+    from datetime import date, timedelta
+    today = date.today().isoformat()
+    thirty_days_later = (date.today() + timedelta(days=30)).isoformat()
+    
+    stats = {}
+    
+    # 1. Contract counts
+    cur.execute("SELECT COUNT(*) FROM clients WHERE status = 'Активен'")
+    stats['active_contracts'] = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM clients WHERE status = 'Изтекъл' OR (contract_expiry IS NOT NULL AND contract_expiry < ?)", (today,))
+    stats['expired_contracts'] = cur.fetchone()[0]
+    
+    cur.execute("SELECT COUNT(*) FROM clients WHERE status = 'Активен' AND contract_expiry >= ? AND contract_expiry <= ?", 
+                (today, thirty_days_later))
+    stats['expiring_soon'] = cur.fetchone()[0]
+    
+    # 2. Financials (Monthly Revenue from maintenance_price)
+    cur.execute("SELECT SUM(maintenance_price) FROM devices d JOIN clients c ON d.client_id = c.id WHERE c.status = 'Активен'")
+    result = cur.fetchone()
+    stats['monthly_revenue'] = result[0] if result[0] else 0.0
+    
+    # 3. Model distribution
+    cur.execute("SELECT model, COUNT(*) as count FROM devices GROUP BY model ORDER BY count DESC LIMIT 5")
+    stats['model_dist'] = {row[0]: row[1] for row in cur.fetchall()}
+    
+    # 4. Total devices
+    cur.execute("SELECT COUNT(*) FROM devices")
+    stats['total_devices'] = cur.fetchone()[0]
+    
+    con.close()
+    return stats
