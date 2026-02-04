@@ -63,3 +63,5 @@ test_output.*
 /Contracts_App_Pro/build/
 /Contracts_App_Pro/dist/
 /Contracts_App_Pro/installer/
+/InvoiceApp/
+/Contracts_App_Pro/backups/
