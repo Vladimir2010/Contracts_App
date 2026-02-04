@@ -65,3 +65,6 @@ test_output.*
 /Contracts_App_Pro/installer/
 /InvoiceApp/
 /Contracts_App_Pro/backups/
+/Contracts_App_Pro/data/.super_admin.enc
+/ContractsAppPro_Installer.zip
+/Ф-ра.pdf
