@@ -60,3 +60,6 @@ test_output.*
 /CAppPro_Installer.exe
 /Contracts_App_Pro/data/contracts.db.bak
 /Contracts_App_Pro/Generated/
+/Contracts_App_Pro/build/
+/Contracts_App_Pro/dist/
+/Contracts_App_Pro/installer/

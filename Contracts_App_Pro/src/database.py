@@ -8,298 +8,331 @@ DB_PATH = os.path.join(get_app_root(), "data", "contracts.db")
 
 def get_connection():
     """Get database connection"""
-    return sqlite3.connect(DB_PATH)
+    try:
+        # Ensure data directory exists
+        db_dir = os.path.dirname(DB_PATH)
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+        return sqlite3.connect(DB_PATH)
+    except Exception as e:
+        print(f"Database connection error: {e}")
+        raise
 
 
 def init_db():
     """Initialize database with all tables"""
-    con = get_connection()
-    cur = con.cursor()
+    con = None
+    try:
+        con = get_connection()
+        cur = con.cursor()
 
-    # Clients table - stores company/contract information
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            contract_number TEXT NOT NULL,
-            status TEXT,
-            contract_start DATE,
-            contract_expiry DATE,
-            company_name TEXT NOT NULL,
-            city TEXT,
-            postal_code TEXT,
-            address TEXT,
-            eik TEXT,
-            vat_registered TEXT,
-            mol TEXT,
-            phone1 TEXT,
-            phone2 TEXT
-        )
-    """)
+        # Clients table - stores company/contract information
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contract_number TEXT NOT NULL,
+                status TEXT,
+                contract_start DATE,
+                contract_expiry DATE,
+                company_name TEXT NOT NULL,
+                city TEXT,
+                postal_code TEXT,
+                address TEXT,
+                eik TEXT,
+                vat_registered TEXT,
+                mol TEXT,
+                phone1 TEXT,
+                phone2 TEXT
+            )
+        """)
 
-    # Devices table - stores fiscal device information
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS devices (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id INTEGER NOT NULL,
-            fdrid TEXT,
-            euro_done INTEGER DEFAULT 0,
-            object_name TEXT,
-            object_address TEXT,
-            object_phone TEXT,
-            model TEXT,
-            certificate_number TEXT,
-            certificate_expiry DATE,
-            serial_number TEXT,
-            fiscal_memory TEXT,
-            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-        )
-    """)
+        # Devices table - stores fiscal device information
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                client_id INTEGER NOT NULL,
+                fdrid TEXT,
+                euro_done INTEGER DEFAULT 0,
+                object_name TEXT,
+                object_address TEXT,
+                object_phone TEXT,
+                model TEXT,
+                certificate_number TEXT,
+                certificate_expiry DATE,
+                serial_number TEXT,
+                fiscal_memory TEXT,
+                FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+            )
+        """)
 
-    # Certificates table - stores certificate numbers and expiry dates from BIM
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS certificates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            number TEXT UNIQUE NOT NULL,
-            expiry_date DATE
-        )
-    """)
+        # Certificates table - stores certificate numbers and expiry dates from BIM
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS certificates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                number TEXT UNIQUE NOT NULL,
+                expiry_date DATE
+            )
+        """)
 
-    # Create indexes for faster searches
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_contract_number ON clients(contract_number)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_eik ON clients(eik)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_serial ON devices(serial_number)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_client_id ON devices(client_id)")
+        # Create indexes for faster searches
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_contract_number ON clients(contract_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_eik ON clients(eik)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_serial ON devices(serial_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_client_id ON devices(client_id)")
 
-    # Users table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            full_name TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        # Users table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                full_name TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    # Audit Logs table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            username TEXT,
-            action TEXT NOT NULL,
-            details TEXT,
-            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
-        )
-    """)
+        # Audit Logs table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                username TEXT,
+                action TEXT NOT NULL,
+                details TEXT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+            )
+        """)
 
-    # Repair History table - stores generated repair protocols
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS repair_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id INTEGER NOT NULL,
-            problem_description TEXT,
-            repair_date DATE,
-            protocol_path TEXT,
-            FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
-        )
-    """)
+        # Repair History table - stores generated repair protocols
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS repair_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id INTEGER NOT NULL,
+                problem_description TEXT,
+                repair_date DATE,
+                protocol_path TEXT,
+                FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
+            )
+        """)
 
-    con.commit()
-    
-    # Check if we need to create default admin
-    cur.execute("SELECT count(*) FROM users")
-    if cur.fetchone()[0] == 0:
-        try:
-            from auth import hash_password
-            from super_admin_manager import save_super_admin
-            # Default creds: vladpos / V!adp0s
-            pwd_hash = hash_password("V!adp0s")
-            cur.execute("""
-                INSERT INTO users (username, password_hash, full_name)
-                VALUES (?, ?, ?)
-            """, ("vladpos", pwd_hash, "Администратор"))
-            con.commit()
-            
-            # Save super admin to encrypted storage
-            save_super_admin("vladpos", pwd_hash, "Администратор")
-        except Exception as e:
-            print(f"Error creating default user: {e}")
-    
-    # Migration: Add new columns if they don't exist
-    cur.execute("PRAGMA table_info(devices)")
-    columns = [col[1] for col in cur.fetchall()]
-    
-    new_cols = [
-        ("created_at", "TIMESTAMP"),
-        ("updated_at", "TIMESTAMP"),
-        ("nra_report_enabled", "INTEGER DEFAULT 1"),
-        ("nra_report_month", "TEXT"),
-        ("nra_td", "TEXT DEFAULT 'СОФИЯ'"),
-        ("bim_model", "TEXT"),
-        ("bim_date", "DATE"),
-        ("maintenance_price", "REAL DEFAULT 0"),
-        ("last_renewed_at", "DATE")
-    ]
-    
-    for col_name, col_type in new_cols:
-        if col_name not in columns:
-            cur.execute(f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}")
-            # Set default value for timestamps manually after adding
-            if col_name in ["created_at", "updated_at"]:
-                cur.execute(f"UPDATE devices SET {col_name} = CURRENT_TIMESTAMP WHERE {col_name} IS NULL")
-    
-    # Migration: Add contract_number and device_id to audit_logs for history tracking
-    cur.execute("PRAGMA table_info(audit_logs)")
-    audit_columns = [col[1] for col in cur.fetchall()]
-    
-    audit_new_cols = [
-        ("contract_number", "TEXT"),
-        ("device_id", "INTEGER")
-    ]
-    
-    for col_name, col_type in audit_new_cols:
-        if col_name not in audit_columns:
-            cur.execute(f"ALTER TABLE audit_logs ADD COLUMN {col_name} {col_type}")
-    
-    con.commit()
-    
-    # Migration: Add role column to users
-    cur.execute("PRAGMA table_info(users)")
-    user_columns = [col[1] for col in cur.fetchall()]
-    
-    if "role" not in user_columns:
-        cur.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
-        # Set vladpos as admin
-        cur.execute("UPDATE users SET role = 'admin' WHERE username = 'vladpos'")
         con.commit()
         
-    # Products table
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            category TEXT,
-            price REAL NOT NULL,
-            currency TEXT DEFAULT 'BGN',
-            description TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
+        # Check if we need to create default admin
+        cur.execute("SELECT count(*) FROM users")
+        if cur.fetchone()[0] == 0:
+            try:
+                from auth import hash_password
+                from super_admin_manager import save_super_admin
+                # Default creds: vladpos / V!adp0s
+                pwd_hash = hash_password("V!adp0s")
+                cur.execute("""
+                    INSERT INTO users (username, password_hash, full_name)
+                    VALUES (?, ?, ?)
+                """, ("vladpos", pwd_hash, "Администратор"))
+                con.commit()
+                
+                # Save super admin to encrypted storage
+                save_super_admin("vladpos", pwd_hash, "Администратор")
+            except Exception as e:
+                print(f"Error creating default user: {e}")
+        
+        # Migration: Add new columns if they don't exist
+        cur.execute("PRAGMA table_info(devices)")
+        columns = [col[1] for col in cur.fetchall()]
+        
+        new_cols = [
+            ("created_at", "TIMESTAMP"),
+            ("updated_at", "TIMESTAMP"),
+            ("nra_report_enabled", "INTEGER DEFAULT 1"),
+            ("nra_report_month", "TEXT"),
+            ("nra_td", "TEXT DEFAULT 'СОФИЯ'"),
+            ("bim_model", "TEXT"),
+            ("bim_date", "DATE"),
+            ("maintenance_price", "REAL DEFAULT 0"),
+            ("last_renewed_at", "DATE")
+        ]
+        
+        for col_name, col_type in new_cols:
+            if col_name not in columns:
+                cur.execute(f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}")
+                # Set default value for timestamps manually after adding
+                if col_name in ["created_at", "updated_at"]:
+                    cur.execute(f"UPDATE devices SET {col_name} = CURRENT_TIMESTAMP WHERE {col_name} IS NULL")
+        
+        # Migration: Add contract_number and device_id to audit_logs for history tracking
+        cur.execute("PRAGMA table_info(audit_logs)")
+        audit_columns = [col[1] for col in cur.fetchall()]
+        
+        audit_new_cols = [
+            ("contract_number", "TEXT"),
+            ("device_id", "INTEGER")
+        ]
+        
+        for col_name, col_type in audit_new_cols:
+            if col_name not in audit_columns:
+                cur.execute(f"ALTER TABLE audit_logs ADD COLUMN {col_name} {col_type}")
+        
+        con.commit()
+        
+        # Migration: Add role column to users
+        cur.execute("PRAGMA table_info(users)")
+        user_columns = [col[1] for col in cur.fetchall()]
+        
+        if "role" not in user_columns:
+            cur.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
+            # Set vladpos as admin
+            cur.execute("UPDATE users SET role = 'admin' WHERE username = 'vladpos'")
+            con.commit()
+            
+        # Products table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                category TEXT,
+                price REAL NOT NULL,
+                currency TEXT DEFAULT 'BGN',
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    con.commit()
-    con.close()
+        con.commit()
+    except Exception as e:
+        print(f"Database initialization error: {e}")
+        if con: con.rollback()
+    finally:
+        if con: con.close()
 
 
 # ============= CLIENT OPERATIONS =============
 
 def add_client(data: Dict[str, Any]) -> int:
     """Add new client and return client_id"""
-    con = get_connection()
-    cur = con.cursor()
-    
-    cur.execute("""
-        INSERT INTO clients (
-            contract_number, status, contract_start, contract_expiry,
-            company_name, city, postal_code, address,
-            eik, vat_registered, mol, phone1, phone2
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        data.get('contract_number'),
-        data.get('status'),
-        data.get('contract_start'),
-        data.get('contract_expiry'),
-        data.get('company_name'),
-        data.get('city'),
-        data.get('postal_code'),
-        data.get('address'),
-        data.get('eik'),
-        data.get('vat_registered'),
-        data.get('mol'),
-        data.get('phone1'),
-        data.get('phone2')
-    ))
-    
-    client_id = cur.lastrowid
-    con.commit()
-    con.close()
-    return client_id
+    con = None
+    try:
+        con = get_connection()
+        cur = con.cursor()
+        
+        cur.execute("""
+            INSERT INTO clients (
+                contract_number, status, contract_start, contract_expiry,
+                company_name, city, postal_code, address,
+                eik, vat_registered, mol, phone1, phone2
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            data.get('contract_number'),
+            data.get('status'),
+            data.get('contract_start'),
+            data.get('contract_expiry'),
+            data.get('company_name'),
+            data.get('city'),
+            data.get('postal_code'),
+            data.get('address'),
+            data.get('eik'),
+            data.get('vat_registered'),
+            data.get('mol'),
+            data.get('phone1'),
+            data.get('phone2')
+        ))
+        
+        client_id = cur.lastrowid
+        con.commit()
+        return client_id
+    except Exception as e:
+        print(f"Error adding client: {e}")
+        if con: con.rollback()
+        return -1
+    finally:
+        if con: con.close()
 
 
 def get_client_by_contract(contract_number: str) -> Optional[Dict[str, Any]]:
     """Get client data by contract number"""
-    con = get_connection()
-    cur = con.cursor()
-    
-    cur.execute("""
-        SELECT id, contract_number, status, contract_start, contract_expiry,
-               company_name, city, postal_code, address,
-               eik, vat_registered, mol, phone1, phone2
-        FROM clients
-        WHERE contract_number = ?
-        LIMIT 1
-    """, (contract_number,))
-    
-    row = cur.fetchone()
-    con.close()
-    
-    if row:
-        return {
-            'id': row[0],
-            'contract_number': row[1],
-            'status': row[2],
-            'contract_start': row[3],
-            'contract_expiry': row[4],
-            'company_name': row[5],
-            'city': row[6],
-            'postal_code': row[7],
-            'address': row[8],
-            'eik': row[9],
-            'vat_registered': row[10],
-            'mol': row[11],
-            'phone1': row[12],
-            'phone2': row[13]
-        }
-    return None
+    con = None
+    try:
+        con = get_connection()
+        cur = con.cursor()
+        
+        cur.execute("""
+            SELECT id, contract_number, status, contract_start, contract_expiry,
+                   company_name, city, postal_code, address,
+                   eik, vat_registered, mol, phone1, phone2
+            FROM clients
+            WHERE contract_number = ?
+            LIMIT 1
+        """, (contract_number,))
+        
+        row = cur.fetchone()
+        
+        if row:
+            return {
+                'id': row[0],
+                'contract_number': row[1],
+                'status': row[2],
+                'contract_start': row[3],
+                'contract_expiry': row[4],
+                'company_name': row[5],
+                'city': row[6],
+                'postal_code': row[7],
+                'address': row[8],
+                'eik': row[9],
+                'vat_registered': row[10],
+                'mol': row[11],
+                'phone1': row[12],
+                'phone2': row[13]
+            }
+        return None
+    except Exception as e:
+        print(f"Error fetching client: {e}")
+        return None
+    finally:
+        if con: con.close()
 
 
 def get_devices_by_contract(contract_number: str) -> List[Dict[str, Any]]:
     """Get all devices for a specific contract number"""
-    con = get_connection()
-    cur = con.cursor()
-    
-    cur.execute("""
-        SELECT d.id, d.fdrid, d.euro_done, d.object_name, d.object_address, 
-               d.object_phone, d.model, d.certificate_number, 
-               d.certificate_expiry, d.serial_number, d.fiscal_memory,
-               c.contract_expiry
-        FROM devices d
-        JOIN clients c ON c.id = d.client_id
-        WHERE c.contract_number = ?
-    """, (contract_number,))
-    
-    rows = cur.fetchall()
-    con.close()
-    
-    devices = []
-    for row in rows:
-        devices.append({
-            'id': row[0],
-            'fdrid': row[1],
-            'euro_done': bool(row[2]),
-            'object_name': row[3],
-            'object_address': row[4],
-            'object_phone': row[5],
-            'model': row[6],
-            'certificate_number': row[7],
-            'certificate_expiry': row[8],
-            'serial_number': row[9],
-            'fiscal_memory': row[10],
-            'contract_expiry': row[11]
-        })
-    return devices
+    con = None
+    try:
+        con = get_connection()
+        cur = con.cursor()
+        
+        cur.execute("""
+            SELECT d.id, d.fdrid, d.euro_done, d.object_name, d.object_address, 
+                   d.object_phone, d.model, d.certificate_number, 
+                   d.certificate_expiry, d.serial_number, d.fiscal_memory,
+                   c.contract_expiry
+            FROM devices d
+            JOIN clients c ON c.id = d.client_id
+            WHERE c.contract_number = ?
+        """, (contract_number,))
+        
+        rows = cur.fetchall()
+        
+        devices = []
+        for row in rows:
+            devices.append({
+                'id': row[0],
+                'fdrid': row[1],
+                'euro_done': bool(row[2]),
+                'object_name': row[3],
+                'object_address': row[4],
+                'object_phone': row[5],
+                'model': row[6],
+                'certificate_number': row[7],
+                'certificate_expiry': row[8],
+                'serial_number': row[9],
+                'fiscal_memory': row[10],
+                'contract_expiry': row[11]
+            })
+        return devices
+    except Exception as e:
+        print(f"Error fetching devices for contract: {e}")
+        return []
+    finally:
+        if con: con.close()
 
 
 def get_all_contract_numbers() -> List[str]:
@@ -1137,24 +1170,53 @@ def get_db_stats() -> Dict[str, Any]:
     cur = con.cursor()
     
     from datetime import date, timedelta
-    today = date.today().isoformat()
-    thirty_days_later = (date.today() + timedelta(days=30)).isoformat()
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    thirty_days_later = today + timedelta(days=30)
+    
+    today_str = today.isoformat()
+    tomorrow_str = tomorrow.isoformat()
+    thirty_days_later_str = thirty_days_later.isoformat()
     
     stats = {}
     
-    # 1. Contract counts
-    cur.execute("SELECT COUNT(*) FROM clients WHERE status = 'Активен'")
+    # Helper for case-insensitive status matching in standard SQLite
+    def status_is(status_val):
+        return f"(LOWER({status_val}) = 'активен' OR {status_val} = 'Активен')"
+    
+    def status_is_expired(status_val):
+        return f"(LOWER({status_val}) = 'изтекъл' OR {status_val} = 'Изтекъл')"
+
+    # 1. Active Contracts: expiry >= tomorrow
+    cur.execute("""
+        SELECT COUNT(*) FROM clients 
+        WHERE (contract_expiry IS NOT NULL AND contract_expiry >= ?)
+    """, (tomorrow_str,))
     stats['active_contracts'] = cur.fetchone()[0]
     
-    cur.execute("SELECT COUNT(*) FROM clients WHERE status = 'Изтекъл' OR (contract_expiry IS NOT NULL AND contract_expiry < ?)", (today,))
+    # 2. Expired Contracts: status 'изтекъл' OR expiry < today
+    cur.execute(f"""
+        SELECT COUNT(*) FROM clients 
+        WHERE ({status_is_expired('status')})
+        OR (contract_expiry IS NOT NULL AND contract_expiry < ?)
+    """, (today_str,))
     stats['expired_contracts'] = cur.fetchone()[0]
     
-    cur.execute("SELECT COUNT(*) FROM clients WHERE status = 'Активен' AND contract_expiry >= ? AND contract_expiry <= ?", 
-                (today, thirty_days_later))
+    # 3. Expiring Soon: today <= expiry <= thirty_days_later
+    cur.execute("""
+        SELECT COUNT(*) FROM clients 
+        WHERE (contract_expiry IS NOT NULL AND contract_expiry >= ? AND contract_expiry <= ?)
+    """, (today_str, thirty_days_later_str))
     stats['expiring_soon'] = cur.fetchone()[0]
     
     # 2. Financials (Monthly Revenue from maintenance_price)
-    cur.execute("SELECT SUM(maintenance_price) FROM devices d JOIN clients c ON d.client_id = c.id WHERE c.status = 'Активен'")
+    # Using date-based definition for revenue
+    cur.execute("""
+        SELECT SUM(maintenance_price) 
+        FROM devices d 
+        JOIN clients c ON d.client_id = c.id 
+        WHERE (c.contract_expiry IS NOT NULL AND c.contract_expiry >= ?)
+    """, (tomorrow_str,))
     result = cur.fetchone()
     stats['monthly_revenue'] = result[0] if result[0] else 0.0
     

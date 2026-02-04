@@ -1,10 +1,27 @@
 Traceback (most recent call last):
-  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1178, in <module>
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1414, in <module>
     main()
     ~~~~^^
-  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1168, in main
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1403, in main
     window = MainWindow()
-  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 95, in __init__
-    self.tabs = QTabWidget()
-                ^^^^^^^^^^
-NameError: name 'QTabWidget' is not defined. Did you mean: 'QTableWidget'?
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 182, in __init__
+    self.setup_stats_tab()
+    ~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 287, in setup_stats_tab
+    self.card_active = self.create_stat_card("Активни договори", "0", "#2ecc71")
+                       ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 319, in create_stat_card
+    card = QFrame()
+           ^^^^^^
+NameError: name 'QFrame' is not defined
+
+==================================================
+Timestamp: 2026-01-25 16:49:02
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1491, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1454, in main
+    load_certificates_safe()
+    ~~~~~~~~~~~~~~~~~~~~~~^^
+TypeError: load_certificates_safe() missing 1 required positional argument: 'excel_path'

@@ -213,7 +213,7 @@ def check_tr(eik: str):
             "Referer": "https://portal.registryagency.bg/CR/en/Reports/ActiveConditionTabResult"
         }
         
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=20)
         if response.status_code != 200:
             return None
             
@@ -316,7 +316,7 @@ def check_vat(eik: str):
     </soapenv:Envelope>"""
 
     try:
-        v_resp = requests.post(url, data=soap_body, headers=headers, timeout=10)
+        v_resp = requests.post(url, data=soap_body, headers=headers, timeout=20)
         if v_resp.status_code == 200:
             root = ET.fromstring(v_resp.text)
             ns = {"ns": "urn:ec.europa.eu:taxud:vies:services:checkVat:types"}

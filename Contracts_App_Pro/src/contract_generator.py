@@ -19,6 +19,52 @@ def clean_numeric(val):
         return s[:-2]
     return s
 
+def sanitize_serial(sn):
+    """Convert Cyrillic prefix characters to Latin for Cash Register serial numbers"""
+    if not sn: return ""
+    v = str(sn).strip().upper()
+    # Common Cyrillic to Latin prefix mapping for Casio/Daisy/Datecs/Tremol etc.
+    # Д -> D, Т -> T, У -> Y, З -> Z, К -> K, С -> S, П -> P
+    cmap = {
+        'Д': 'D', 'Т': 'T', 'У': 'Y', 'З': 'Z', 'К': 'K', 
+        'С': 'S', 'П': 'P', 'М': 'M', 'Е': 'E', 'Х': 'X'
+    }
+    res = ""
+    for char in v:
+        res += cmap.get(char, char)
+    return res
+
+def get_prof_model(model):
+    """Map informal or display model names to official professional ones"""
+    if not model: return "---"
+    m = str(model).strip()
+    
+    # Remove common prefixes (EKA or Manufacturer brands)
+    prefixes = ["ЕКА ", "EKA ", "DAISY ", "TREMOL ", "DATECS "]
+    for p in prefixes:
+        if m.upper().startswith(p):
+            m = m[len(p):].strip()
+        
+    # Specific mappings for Daisy, Datecs, Tremol
+    mappings = {
+        "Perfect S": "Perfect S 01",
+        "Perfect M": "Perfect M 01",
+        "Compact S": "Compact S 01",
+        "Compact M": "Compact M 01",
+        "Micro C": "Micro C 01",
+        "Expert 01": "eXpert 01",
+        "Expert SX": "eXpert SX 01",
+        "eXpert SX": "eXpert SX 01",
+        "WP-50": "WP-50 01",
+        "DP-150": "DP-150 01",
+        "DP-25": "DP-25 01",
+        "M20": "M20",
+        "M23": "M23",
+        "S25": "S25"
+    }
+    
+    return mappings.get(m, m)
+
 def docx_to_pdf(docx_path):
     """Convert DOCX to PDF using win32com on Windows"""
     if not os.path.exists(docx_path):
@@ -1181,8 +1227,8 @@ def generate_duplicate_passport(client_data, device_data, manufacturer, template
     # Datecs: 1-Model, 2-SN, 3-FM, 4-CoName, 5-CoEIK, 6-CoAddr
     # Daisy/Tremol: 1-Model, 2-SN, 3-FM, 4-CoName, 5-CoEIK, 6-CoAddr
     
-    mappings["{1}"] = d_model
-    mappings["{2}"] = d_sn
+    mappings["{1}"] = get_prof_model(d_model)
+    mappings["{2}"] = sanitize_serial(d_sn)
     mappings["{3}"] = d_fm
     mappings["{4}"] = c_name
     mappings["{5}"] = final_c_eik
@@ -1199,6 +1245,8 @@ def generate_duplicate_passport(client_data, device_data, manufacturer, template
         mappings["{10}"] = s_addr
         # 11 - Service MOL
         mappings["{11}"] = s_mol
+        # 12 - Manufacturer Bulgarian Name
+        mappings["{12}"] = "Дейзи" if manufacturer == 'Daisy' else "Тремол"
         
     elif manufacturer == 'Datecs':
         # 7 - Service Name
@@ -1209,6 +1257,8 @@ def generate_duplicate_passport(client_data, device_data, manufacturer, template
         mappings["{9}"] = s_addr
         # 10 - Service MOL
         mappings["{10}"] = s_mol
+        # 11 - Manufacturer Bulgarian Name
+        mappings["{11}"] = "Датекс"
         # Note: Client MOL is not used in Datecs mapping provided by user
         
     # Apply replacements

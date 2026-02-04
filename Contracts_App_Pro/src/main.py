@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QLineEdit,
     QCheckBox, QMessageBox, QFileDialog, QStatusBar, QMenu, QToolBar,
     QSplashScreen, QProgressBar, QLabel, QToolButton, QDialog, QComboBox,
-    QTabWidget
+    QTabWidget, QFrame, QGroupBox, QScrollArea, QGridLayout, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, QUrl
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QDesktopServices
@@ -214,6 +214,8 @@ class MainWindow(QMainWindow):
         # Hide ID column
         self.table.setColumnHidden(0, True)
         self.table.setSortingEnabled(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         
         # Set column widths
         widths = [0, 80, 80, 200, 90, 50, 120, 80, 50, 200, 90, 90, 90, 90, 120, 200, 90, 120, 100, 100, 100, 80, 90, 50, 60]
@@ -273,7 +275,6 @@ class MainWindow(QMainWindow):
         self.stats_tab.setLayout(layout)
         
         # Scroll area for stats
-        from PyQt6.QtWidgets import QScrollArea, QFrame, QGridLayout
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -607,6 +608,25 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
+        # Tools Group: Импорт
+        btn_import = QToolButton()
+        btn_import.setText("Импорт")
+        btn_import.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu_import = QMenu(self)
+        
+        action_import_contracts = QAction("📥 Импорт на договори (xlsx)", self)
+        action_import_contracts.triggered.connect(self.import_from_excel)
+        menu_import.addAction(action_import_contracts)
+        
+        action_import_bim = QAction("📥 Свидетелства от БИМ (xlsx)", self)
+        action_import_bim.triggered.connect(self.load_certificates)
+        menu_import.addAction(action_import_bim)
+        
+        btn_import.setMenu(menu_import)
+        toolbar.addWidget(btn_import)
+        
+        toolbar.addSeparator()
+        
         # Standalone: Настройки
         action_settings = QAction("🛠️ Настройки", self)
         action_settings.triggered.connect(self.show_settings)
@@ -645,7 +665,7 @@ class MainWindow(QMainWindow):
         """Show About dialog"""
         QMessageBox.about(self, "За програмата", 
             """<h3>Contracts App Professional</h3>
-            <p><b>Версия:</b> 1.0.0</p>
+            <p><b>Версия:</b> 1.0.5</p>
             <p>Професионална система за управление на договори и фискални устройства.</p>
             <p>Този софтуер е предназначен за автоматизиране на процесите по регистрация, 
             дерегистрация и поддръжка на ФУ.</p>
@@ -834,14 +854,13 @@ class MainWindow(QMainWindow):
     
     def edit_selected_device(self):
         """Edit the selected device"""
-        selected_rows = self.table.selectionModel().selectedRows()
+        row = self.table.currentRow()
         
-        if not selected_rows:
+        if row < 0:
             QMessageBox.warning(self, "Внимание", "Моля, изберете устройство за редактиране!")
             return
         
         # Get device ID from first column (hidden)
-        row = selected_rows[0].row()
         device_id = int(self.table.item(row, 0).text())
         
         dialog = EditDeviceDialog(device_id, self)
@@ -854,9 +873,9 @@ class MainWindow(QMainWindow):
     
     def delete_selected_device(self):
         """Delete the selected device"""
-        selected_rows = self.table.selectionModel().selectedRows()
+        row = self.table.currentRow()
         
-        if not selected_rows:
+        if row < 0:
             QMessageBox.warning(self, "Внимание", "Моля, изберете устройство за изтриване!")
             return
         
@@ -869,7 +888,6 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            row = selected_rows[0].row()
             device_id = int(self.table.item(row, 0).text())
             
             if delete_device(device_id):
@@ -982,14 +1000,16 @@ class MainWindow(QMainWindow):
 
     def generate_selected_certificate(self):
         """Generate certificate for selected device"""
-        selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
+        row = self.table.currentRow()
+        if row < 0:
             QMessageBox.warning(self, "Внимание", "Моля, изберете устройство!")
             return
             
-        row = selected_rows[0].row()
         item = self.table.item(row, 0)
         device_id = item.data(Qt.ItemDataRole.UserRole)
+        if not device_id:
+             # Fallback if ItemDataRole wasn't used
+             device_id = int(item.text())
         
         from database import get_device_full
         from contract_generator import generate_registration_certificate
@@ -1200,11 +1220,11 @@ class MainWindow(QMainWindow):
             
             if reply == QMessageBox.StandardButton.Yes:
                 self.statusBar.showMessage("Импортиране...")
-                count = import_contracts_simple(filename)
+                result_msg = import_contracts_simple(filename)
                 self.refresh_table()
                 if self.current_user:
-                    log_action(self.current_user['id'], self.current_user['username'], "IMPORT_DATA", f"Imported {count} records")
-                QMessageBox.information(self, "Успех", f"Импортирани са {count} записа.")
+                    log_action(self.current_user['id'], self.current_user['username'], "IMPORT_DATA", f"Imported data from {os.path.basename(filename)}")
+                QMessageBox.information(self, "Резултате от импорта", result_msg)
 
     def show_settings(self):
         """Show settings dialog"""
@@ -1240,12 +1260,11 @@ class MainWindow(QMainWindow):
 
     def generate_repair_protocol_action(self):
         """Open repair protocol dialog for selected device"""
-        selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
+        row = self.table.currentRow()
+        if row < 0:
             QMessageBox.warning(self, "Внимание", "Моля, изберете устройство!")
             return
             
-        row = selected_rows[0].row()
         device_id = int(self.table.item(row, 0).text())
         
         dialog = RepairProtocolDialog(device_id, self)
@@ -1306,14 +1325,16 @@ class MainWindow(QMainWindow):
 
     def generate_duplicate_action(self):
         """Generate Duplicate Passport Application"""
-        selected_rows = self.table.selectionModel().selectedRows()
-        if not selected_rows:
+        row = self.table.currentRow()
+        if row < 0:
             QMessageBox.warning(self, "Внимание", "Моля, изберете устройство!")
             return
             
-        row = selected_rows[0].row()
         item = self.table.item(row, 0)
         device_id = item.data(Qt.ItemDataRole.UserRole)
+        if not device_id:
+             # Fallback
+             device_id = int(item.text())
         
         from database import get_device_full
         
@@ -1322,7 +1343,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Грешка", "Не може да се зареди информацията за устройството.")
             return
 
-        dlg = DuplicatePassportDialog(self)
+        # Try to infer manufacturer from model name
+        model_str = full_data.get('model', '').upper()
+        default_manu = None
+        if "DAISY" in model_str: default_manu = "Daisy"
+        elif "TREMOL" in model_str: default_manu = "Tremol"
+        elif "DATECS" in model_str: default_manu = "Datecs"
+
+        dlg = DuplicatePassportDialog(self, default_manufacturer=default_manu)
         if dlg.exec():
             manufacturer = dlg.manufacturer
             
@@ -1368,6 +1396,10 @@ def main():
     splash = SplashScreen()
     splash.show()
     
+    # Disable automatic exit when windows close (crucial for login/splash flow)
+    # This must be set before any windows are shown and closed (like splash or error boxes)
+    app.setQuitOnLastWindowClosed(False)
+    
     # Simulate loading process while initializing
     # In a real app, this would happen during data loading
     for i in range(1, 101):
@@ -1384,8 +1416,71 @@ def main():
     # Initialize database
     init_db()
     
+def handle_exception(exc_type, exc_value, exc_traceback):
+    """Global exception handler to prevent app from closing silently"""
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+
+    import traceback
+    error_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    
+    # Log to file
+    try:
+        with open("crash_log.txt", "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*50}\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(error_msg)
+    except:
+        pass
+
+    # Show dialog
+    try:
+        from PyQt6.QtWidgets import QMessageBox, QApplication
+        if QApplication.instance():
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Critical)
+            msg.setWindowTitle("Критична грешка")
+            msg.setText("Възникна неочаквана грешка в приложението.")
+            msg.setInformativeText("Програмата записа детайли в crash_log.txt. Моля, свържете се с поддръжката.")
+            msg.setDetailedText(error_msg)
+            msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+            msg.exec()
+    except:
+        pass
+
+sys.excepthook = handle_exception
+
+def main():
+    # Set exception hook as early as possible
+    sys.excepthook = handle_exception
+    
+    app = QApplication(sys.argv)
+    
+    # Set global application icon
+    icon_path = get_resource_path('vladpos_logo.ico')
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+    
+    # Splash screen
+    splash = SplashScreen()
+    splash.show()
+    app.processEvents()
+    
+    # Progress simulation
+    splash.setProgress(20)
+    
+    # Initialize DB (migrations etc)
+    init_db()
+    splash.setProgress(80)
+    
     # Run Backup BEFORE showing UI
-    backup_database()
+    try:
+        backup_database()
+    except:
+        pass
+    
+    splash.setProgress(100)
     
     # Set application style
     app.setStyle('Fusion')
@@ -1393,12 +1488,15 @@ def main():
     # Create login dialog
     login = LoginDialog()
     
-    # Close splash before login or after? 
-    # Usually better to close splash, show login. 
-    # But user wants splash to finish loading first.
-    splash.finish(login) # Use login as the widget to switch to
+    # Close splash when login is shown
+    splash.finish(login) 
     
-    if login.exec() == QDialog.DialogCode.Accepted:
+    result = login.exec()
+    
+    if result == QDialog.DialogCode.Accepted:
+        # Re-enable automatic exit for the main application window
+        app.setQuitOnLastWindowClosed(True)
+        
         # Create and show main window
         window = MainWindow()
         window.set_user(login.user)
@@ -1410,18 +1508,4 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        import traceback
-        with open("crash_log.txt", "w") as f:
-            f.write(traceback.format_exc())
-        
-        # Also try to show message box if QApplication exists
-        try:
-            from PyQt6.QtWidgets import QMessageBox, QApplication
-            if QApplication.instance():
-                QMessageBox.critical(None, "Fatal Error", f"Fatal error:\n{str(e)}")
-        except:
-            pass
-        sys.exit(1)
+    main()

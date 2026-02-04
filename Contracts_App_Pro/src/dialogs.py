@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QMessageBox, QDateEdit, QCheckBox, QLabel, QTabWidget, QWidget,
-    QFileDialog, QSpinBox, QCompleter, QTableWidget, QTableWidgetItem,
+    QFileDialog, QSpinBox, QDoubleSpinBox, QCompleter, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QTextEdit
 )
 from PyQt6.QtCore import QDate, Qt, QUrl
@@ -1459,11 +1459,14 @@ class LoginDialog(QDialog):
         btn_login.setObjectName("btnLogin")
         btn_login.clicked.connect(self.attempt_login)
         btn_login.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_login.setDefault(True)
+        btn_login.setAutoDefault(True)
         
         btn_exit = QPushButton("ИЗХОД")
         btn_exit.setObjectName("btnExit")
         btn_exit.clicked.connect(self.reject)
         btn_exit.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn_exit.setAutoDefault(False)
         
         buttons.addWidget(btn_exit) # Exit left
         buttons.addWidget(btn_login) # Login right
@@ -1498,9 +1501,15 @@ class LoginDialog(QDialog):
         else:
             self.attempts += 1
             remaining = self.max_attempts - self.attempts
-            self.lbl_error.setText(f"Грешно име или парола! Остават {remaining} опита.")
+            
+            # Show warning message
+            QMessageBox.warning(self, "Грешка при вход", f"Грешно потребителско име или парола!\nОстават {remaining} опита.")
+            
+            # Clear both fields and reset focus as requested
+            self.username.clear()
             self.password.clear()
-            self.password.setFocus()
+            self.lbl_error.setText(f"Грешно име или парола! Остават {remaining} опита.")
+            self.username.setFocus()
             
             if remaining <= 0:
                 QMessageBox.critical(self, "Грешка", "Превишен брой опити за вход! Програмата ще се затвори.")
@@ -2522,11 +2531,12 @@ class ProductDialog(QDialog):
 
 
 class DuplicatePassportDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, default_manufacturer=None):
         super().__init__(parent)
         self.setWindowTitle("Заявление за дубликат")
         self.setFixedSize(400, 200)
         self.manufacturer = None
+        self.default_manufacturer = default_manufacturer
         self.init_ui()
 
     def init_ui(self):
@@ -2535,6 +2545,11 @@ class DuplicatePassportDialog(QDialog):
         form = QFormLayout()
         self.combo_manu = QComboBox()
         self.combo_manu.addItems(["Daisy", "Tremol", "Datecs"])
+        
+        if self.default_manufacturer:
+            index = self.combo_manu.findText(self.default_manufacturer)
+            if index >= 0:
+                self.combo_manu.setCurrentIndex(index)
         
         form.addRow("Производител:", self.combo_manu)
         
