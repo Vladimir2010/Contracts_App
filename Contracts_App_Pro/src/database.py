@@ -13,7 +13,7 @@ def get_connection():
         db_dir = os.path.dirname(DB_PATH)
         if not os.path.exists(db_dir):
             os.makedirs(db_dir, exist_ok=True)
-        return sqlite3.connect(DB_PATH)
+        return sqlite3.connect(DB_PATH, check_same_thread=False)
     except Exception as e:
         print(f"Database connection error: {e}")
         raise
@@ -42,7 +42,9 @@ def init_db():
                 vat_registered TEXT,
                 mol TEXT,
                 phone1 TEXT,
-                phone2 TEXT
+                phone2 TEXT,
+                last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_deleted INTEGER DEFAULT 0
             )
         """)
 
@@ -61,6 +63,8 @@ def init_db():
                 certificate_expiry DATE,
                 serial_number TEXT,
                 fiscal_memory TEXT,
+                last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                is_deleted INTEGER DEFAULT 0,
                 FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
             )
         """)
@@ -150,15 +154,26 @@ def init_db():
             ("bim_model", "TEXT"),
             ("bim_date", "DATE"),
             ("maintenance_price", "REAL DEFAULT 0"),
-            ("last_renewed_at", "DATE")
+            ("last_renewed_at", "DATE"),
+            ("last_modified", "TIMESTAMP"),
+            ("is_deleted", "INTEGER DEFAULT 0")
         ]
         
         for col_name, col_type in new_cols:
             if col_name not in columns:
                 cur.execute(f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}")
                 # Set default value for timestamps manually after adding
-                if col_name in ["created_at", "updated_at"]:
+                if col_name in ["created_at", "updated_at", "last_modified"]:
                     cur.execute(f"UPDATE devices SET {col_name} = CURRENT_TIMESTAMP WHERE {col_name} IS NULL")
+
+        # Migration: Add sync columns to clients
+        cur.execute("PRAGMA table_info(clients)")
+        client_cols = [col[1] for col in cur.fetchall()]
+        if "last_modified" not in client_cols:
+            cur.execute("ALTER TABLE clients ADD COLUMN last_modified TIMESTAMP")
+            cur.execute("UPDATE clients SET last_modified = CURRENT_TIMESTAMP WHERE last_modified IS NULL")
+        if "is_deleted" not in client_cols:
+            cur.execute("ALTER TABLE clients ADD COLUMN is_deleted INTEGER DEFAULT 0")
         
         # Migration: Add contract_number and device_id to audit_logs for history tracking
         cur.execute("PRAGMA table_info(audit_logs)")
@@ -220,8 +235,9 @@ def add_client(data: Dict[str, Any]) -> int:
             INSERT INTO clients (
                 contract_number, status, contract_start, contract_expiry,
                 company_name, city, postal_code, address,
-                eik, vat_registered, mol, phone1, phone2
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                eik, vat_registered, mol, phone1, phone2,
+                last_modified
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (
             data.get('contract_number'),
             data.get('status'),
@@ -354,14 +370,24 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
     con = get_connection()
     cur = con.cursor()
     
+    # Check for duplicate serial number
+    serial = data.get('serial_number')
+    if serial:
+        cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
+        if cur.fetchone():
+            con.close()
+            # Depending on UX, we might want to update or raise error. 
+            # For now, let's treat it as error to prevent implicit overwrites or duplicates.
+            raise ValueError(f"Device with serial number {serial} already exists!")
+    
     cur.execute("""
         INSERT INTO devices (
             client_id, fdrid, euro_done, object_name, object_address,
             object_phone, model, certificate_number, certificate_expiry,
             serial_number, fiscal_memory,
             nra_report_enabled, nra_report_month, nra_td, bim_model, bim_date,
-            maintenance_price, last_renewed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            maintenance_price, last_renewed_at, last_modified
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
     """, (
         client_id,
         data.get('fdrid'),
@@ -380,7 +406,7 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
         data.get('bim_model'),
         data.get('bim_date'),
         data.get('maintenance_price', 0),
-        datetime.now().strftime('%Y-%m-%d')
+        datetime.now().isoformat()
     ))
     
     device_id = cur.lastrowid
@@ -408,7 +434,8 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         UPDATE clients SET
             contract_number = ?, status = ?, contract_start = ?, contract_expiry = ?,
             company_name = ?, city = ?, postal_code = ?, address = ?,
-            eik = ?, vat_registered = ?, mol = ?, phone1 = ?, phone2 = ?
+            eik = ?, vat_registered = ?, mol = ?, phone1 = ?, phone2 = ?,
+            last_modified = ?
         WHERE id = ?
     """, (
         client_data.get('contract_number'),
@@ -424,6 +451,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         client_data.get('mol'),
         client_data.get('phone1'),
         client_data.get('phone2'),
+        datetime.now().isoformat(),
         client_id
     ))
     
@@ -435,7 +463,8 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
             serial_number = ?, fiscal_memory = ?,
             nra_report_enabled = ?, nra_report_month = ?, nra_td = ?, bim_model = ?, bim_date = ?,
             maintenance_price = ?,
-            updated_at = CURRENT_TIMESTAMP
+            updated_at = CURRENT_TIMESTAMP,
+            last_modified = ?
         WHERE id = ?
     """, (
         device_data.get('fdrid'),
@@ -454,6 +483,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         device_data.get('bim_model'),
         device_data.get('bim_date'),
         device_data.get('maintenance_price', 0),
+        datetime.now().isoformat(),
         device_id
     ))
     

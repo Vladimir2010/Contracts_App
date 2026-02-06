@@ -5,3 +5,5 @@ requests
 python-docx
 reportlab
 pywin32
+fastapi
+uvicorn

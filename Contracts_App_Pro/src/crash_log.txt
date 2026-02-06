@@ -25,3 +25,32 @@ Traceback (most recent call last):
     load_certificates_safe()
     ~~~~~~~~~~~~~~~~~~~~~~^^
 TypeError: load_certificates_safe() missing 1 required positional argument: 'excel_path'
+
+==================================================
+Timestamp: 2026-02-04 20:43:06
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1673, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 1663, in main
+    window = MainWindow()
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 214, in __init__
+    self.init_sync_system()
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'MainWindow' object has no attribute 'init_sync_system'
+
+==================================================
+Timestamp: 2026-02-04 21:33:17
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1604, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1594, in main
+    window = MainWindow()
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 175, in __init__
+    self.create_toolbar()
+    ~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 561, in create_toolbar
+    toolbar.addWidget(btn_devices)
+    ^^^^^^^
+NameError: name 'toolbar' is not defined. Did you mean: 'self.toolbar'?

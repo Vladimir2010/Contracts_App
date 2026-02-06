@@ -12,7 +12,15 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=added_files,
-    hiddenimports=['pandas', 'openpyxl', 'requests', 'docx', 'reportlab', 'pywin32'],
+    hiddenimports=[
+        'pandas', 'openpyxl', 'requests', 'docx', 'reportlab', 'pywin32',
+        'fastapi', 'uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto',
+        'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto',
+        'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto',
+        'uvicorn.lifespan', 'uvicorn.lifespan.on',
+        'pydantic', 'pydantic.fields', 'pydantic.main',
+        'starlette', 'starlette.routing', 'starlette.responses',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -40,7 +48,8 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='resources/vladpos_logo.ico'
+    icon='resources/vladpos_logo.ico',
+    uac_admin=True
 )
 coll = COLLECT(
     exe,

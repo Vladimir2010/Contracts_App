@@ -2,6 +2,20 @@ import sys
 import os
 from datetime import datetime
 
+# Safe stdout/stderr for windowed apps (prevents crashes in --noconsole mode)
+if sys.stdout is None or sys.stderr is None:
+    class StreamRedirector:
+        def write(self, text): pass
+        def flush(self): pass
+        def isatty(self): return False
+        def fileno(self): return -1
+        @property
+        def encoding(self): return 'utf-8'
+        
+    sys.stdout = StreamRedirector()
+    sys.stderr = StreamRedirector()
+    sys.stdin = StreamRedirector() # Using same dummy for stdin read (returns nothing)
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QTableWidget, QTableWidgetItem,
     QPushButton, QVBoxLayout, QWidget, QHBoxLayout, QLineEdit,
@@ -28,6 +42,13 @@ from bim_loader import load_certificates_safe
 from date_utils import format_date_bg
 from path_utils import get_resource_path
 from database import log_action
+try:
+    from server_thread import ServerThread
+    from sync_manager import SyncManager
+except ImportError as e:
+    print(f"Sync modules not available: {e}")
+    ServerThread = None
+    SyncManager = None
 
 class SplashScreen(QSplashScreen):
     def __init__(self):
@@ -193,6 +214,11 @@ class MainWindow(QMainWindow):
         self.refresh_products()
         
         self.current_user = None
+        
+        # Sync Integration
+        self.server_thread = None
+        self.sync_manager = None
+        self.init_sync_system()
 
     def setup_device_tab(self):
         layout = QVBoxLayout()
@@ -516,10 +542,10 @@ class MainWindow(QMainWindow):
     
     def create_toolbar(self):
         """Create application toolbar with themed dropdown menus"""
-        toolbar = QToolBar("Главна лента")
-        toolbar.setMovable(False)
-        toolbar.setIconSize(QSize(32, 32))
-        self.addToolBar(toolbar)
+        self.toolbar = QToolBar("Главна лента")
+        self.toolbar.setMovable(False)
+        self.toolbar.setIconSize(QSize(32, 32))
+        self.addToolBar(self.toolbar)
         
         # Tools Group: Устройства
         btn_devices = QToolButton()
@@ -546,9 +572,9 @@ class MainWindow(QMainWindow):
         menu_devices.addAction(action_delete)
         
         btn_devices.setMenu(menu_devices)
-        toolbar.addWidget(btn_devices)
+        self.toolbar.addWidget(btn_devices)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # Tools Group: Документи
         btn_docs = QToolButton()
@@ -583,9 +609,9 @@ class MainWindow(QMainWindow):
         menu_docs.addAction(action_duplicate)
         
         btn_docs.setMenu(menu_docs)
-        toolbar.addWidget(btn_docs)
+        self.toolbar.addWidget(btn_docs)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # Tools Group: Справки
         btn_reports = QToolButton()
@@ -604,9 +630,9 @@ class MainWindow(QMainWindow):
         menu_reports.addAction(action_nra)
         
         btn_reports.setMenu(menu_reports)
-        toolbar.addWidget(btn_reports)
+        self.toolbar.addWidget(btn_reports)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # Tools Group: Импорт
         btn_import = QToolButton()
@@ -623,43 +649,43 @@ class MainWindow(QMainWindow):
         menu_import.addAction(action_import_bim)
         
         btn_import.setMenu(menu_import)
-        toolbar.addWidget(btn_import)
+        self.toolbar.addWidget(btn_import)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # Standalone: Настройки
         action_settings = QAction("🛠️ Настройки", self)
         action_settings.triggered.connect(self.show_settings)
-        toolbar.addAction(action_settings)
+        self.toolbar.addAction(action_settings)
         
         # Standalone: Одит
         action_audit = QAction("📋 Одит", self)
         action_audit.triggered.connect(self.show_audit_log)
-        toolbar.addAction(action_audit)
+        self.toolbar.addAction(action_audit)
         
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         # Standalone: Обнови
         action_refresh = QAction("🔄 Обнови", self)
         action_refresh.triggered.connect(self.clear_filters)
-        toolbar.addAction(action_refresh)
+        self.toolbar.addAction(action_refresh)
 
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
 
         action_about = QAction("ℹ️ За програмата", self)
         action_about.triggered.connect(self.show_about)
-        toolbar.addAction(action_about)
+        self.toolbar.addAction(action_about)
         
         # New: Tab switching actions for clarity
-        toolbar.addSeparator()
+        self.toolbar.addSeparator()
         
         action_tab_devices = QAction("🏢 Устройства", self)
         action_tab_devices.triggered.connect(lambda: self.tabs.setCurrentIndex(0))
-        toolbar.addAction(action_tab_devices)
+        self.toolbar.addAction(action_tab_devices)
         
         action_tab_products = QAction("📦 Продукти", self)
         action_tab_products.triggered.connect(lambda: self.tabs.setCurrentIndex(1))
-        toolbar.addAction(action_tab_products)
+        self.toolbar.addAction(action_tab_products)
 
     def show_about(self):
         """Show About dialog"""
@@ -1382,6 +1408,110 @@ class MainWindow(QMainWindow):
                 
             except Exception as e:
                 QMessageBox.critical(self, "Грешка", f"Грешка при генериране:\n{str(e)}")
+
+    def init_sync_system(self):
+        """Initialize Sync System based on settings"""
+        if not SyncManager:
+            return
+
+        self.sync_manager = SyncManager()
+        
+        # Connect signals
+        self.sync_manager.status_changed.connect(self.update_sync_status)
+        self.sync_manager.sync_finished.connect(self.on_sync_finished)
+        
+        # Add Sync button to toolbar
+        self.add_sync_action()
+        
+        mode = self.sync_manager.mode
+        
+        if mode == "server":
+            self.start_server_mode()
+        else:
+            self.start_client_mode()
+
+    def add_sync_action(self):
+        """Add manual sync/refresh button to toolbar"""
+        if hasattr(self, 'toolbar'):
+            mode = self.sync_manager.mode if self.sync_manager else "client"
+            
+            if mode == "server":
+                self.sync_action = QAction("🔄 Обнови (Сървър)", self)
+                self.sync_action.setStatusTip("Освежаване на данните от базата")
+                self.sync_action.triggered.connect(self.refresh_table)
+            else:
+                self.sync_action = QAction("🔄 Синхронизирай", self)
+                self.sync_action.setStatusTip("Ръчно синхронизиране на данни")
+                self.sync_action.triggered.connect(self.sync_manager.sync_now)
+            
+            self.toolbar.addAction(self.sync_action)
+
+    def start_server_mode(self):
+        """Start embedded API server"""
+        if ServerThread and not self.server_thread:
+            self.server_thread = ServerThread()
+            # Connect signal for automatic UI refresh when client pushes data
+            if hasattr(self.server_thread, 'signals'):
+                self.server_thread.signals.data_pushed.connect(self.refresh_table)
+            
+            self.server_thread.start()
+            
+            # Detect actual LAN IP to show user
+            import socket
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+                s.close()
+            except:
+                ip = "127.0.0.1"
+                
+            self.statusBar.showMessage(f"РЕЖИМ СЪРВЪР: http://{ip}:8000")
+            self.update_sync_status("server")
+
+    def start_client_mode(self):
+        """Start background sync client"""
+        if self.sync_manager:
+            self.sync_manager.start_background_sync()
+            self.statusBar.showMessage("РЕЖИМ КЛИЕНТ: Свързване...")
+
+    def update_sync_status(self, status):
+        """Update status bar with sync state"""
+        if status == "online":
+            self.statusBar.showMessage("🟢 ВРЪЗКА СЪС СЪРВЪРА: ОК", 5000)
+        elif status == "offline":
+            self.statusBar.showMessage("🔴 НЯМА ВРЪЗКА СЪС СЪРВЪРА (Офлайн режим)", 5000)
+        elif status == "syncing":
+            self.statusBar.showMessage("🔄 Синхронизиране...", 5000)
+        elif status == "server":
+             self.statusBar.showMessage("🟢 СЪРВЪРЪТ РАБОТИ", 5000)
+
+    def on_sync_finished(self, success, message):
+        if success:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.statusBar.showMessage(f"✅ Синхронизирано в {timestamp}")
+            self.refresh_table()
+        else:
+            self.statusBar.showMessage(f"⚠️ Грешка при синхронизация: {message}", 10000)
+    
+    def closeEvent(self, event):
+        """Handle app closure"""
+        try:
+            if hasattr(self, 'server_thread') and self.server_thread:
+                self.server_thread.stop()
+            if hasattr(self, 'sync_manager') and self.sync_manager:
+                self.sync_manager.stop()
+        except:
+            pass
+            
+        reply = QMessageBox.question(self, 'Изход', 
+            "Сигурни ли сте, че искате да излезете?", QMessageBox.StandardButton.Yes | 
+            QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+            
+        if reply == QMessageBox.StandardButton.Yes:
+            event.accept()
+        else:
+            event.ignore()
 
 def main():
     # Create application

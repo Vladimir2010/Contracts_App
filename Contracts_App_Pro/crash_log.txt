@@ -14,3 +14,35 @@ Traceback (most recent call last):
     card = QFrame()
            ^^^^^^
 NameError: name 'QFrame' is not defined
+
+==================================================
+Timestamp: 2026-02-04 20:45:34
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1255, in show_settings
+    dialog = SettingsDialog(self)
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 1594, in __init__
+    self.init_ui()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 1631, in init_ui
+    self.init_network_tab()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 2091, in init_network_tab
+    self.sync_mode_group = QGroupBox("Режим на работа")
+                           ^^^^^^^^^
+NameError: name 'QGroupBox' is not defined
+
+==================================================
+Timestamp: 2026-02-04 20:45:55
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1255, in show_settings
+    dialog = SettingsDialog(self)
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 1594, in __init__
+    self.init_ui()
+    ~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 1631, in init_ui
+    self.init_network_tab()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 2091, in init_network_tab
+    self.sync_mode_group = QGroupBox("Режим на работа")
+                           ^^^^^^^^^
+NameError: name 'QGroupBox' is not defined
