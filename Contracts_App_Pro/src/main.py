@@ -1839,13 +1839,9 @@ class MainWindow(QMainWindow):
              self.statusBar.showMessage("🟢 СЪРВЪРЪТ РАБОТИ", 5000)
 
     def on_sync_finished(self, success, message):
-        self.status_label.setText(f"Последна синхронизация: {datetime.now().strftime('%H:%M:%S')}")
         if not success:
-            self.status_icon.setPixmap(self.offline_pixmap)
-            # self.statusBar.showMessage(f"Синхронизацията не бе успешна: {message}", 5000)
             self.statusBar.showMessage(f"⚠️ Грешка при синхронизация: {message}", 10000)
         else:
-            self.status_icon.setPixmap(self.online_pixmap)
             self.statusBar.showMessage(message, 5000)
             
             # Phase 11: Show pop-up if new items were received
