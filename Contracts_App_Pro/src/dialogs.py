@@ -1743,6 +1743,9 @@ class SettingsDialog(QDialog):
         
         layout.addRow("Път до база данни:", self.c_db_path)
         
+        self.c_autorun = QCheckBox("Стартиране с Windows (Autorun)")
+        layout.addRow("", self.c_autorun)
+        
         self.tab_config.setLayout(layout)
 
     def init_users_tab(self):
@@ -1886,71 +1889,93 @@ class SettingsDialog(QDialog):
 
 
     def load_settings(self):
+        from database import get_setting
+        
+        # Load Synchronized Settings from Database
+        self.s_name.setText(get_setting('name', ''))
+        self.s_eik.setText(get_setting('eik', ''))
+        self.s_vat.setText(get_setting('vat', ''))
+        self.s_city.setText(get_setting('city', ''))
+        self.s_post.setText(get_setting('post', ''))
+        self.s_addr.setText(get_setting('address', ''))
+        self.s_mol.setText(get_setting('mol', ''))
+        self.s_phone1.setText(get_setting('phone1', ''))
+        self.s_phone2.setText(get_setting('phone2', ''))
+        self.s_vat_reg.setChecked(get_setting('vat_registered', 'False') == 'True')
+        
+        self.s_tech_f.setText(get_setting('tech_f', ''))
+        self.s_tech_m.setText(get_setting('tech_m', ''))
+        self.s_tech_l.setText(get_setting('tech_l', ''))
+        self.s_tech_egn.setText(get_setting('tech_egn', ''))
+
+        # Load Local Settings from JSON
         from path_utils import get_app_root
         settings_path = os.path.join(get_app_root(), "data", "settings.json")
-        
         if os.path.exists(settings_path):
             import json
             try:
                 with open(settings_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    # Service Firm
-                    self.s_name.setText(data.get('name', ''))
-                    self.s_eik.setText(data.get('eik', ''))
-                    self.s_vat.setText(data.get('vat', ''))
-                    self.s_city.setText(data.get('city', ''))
-                    self.s_post.setText(data.get('post', ''))
-                    self.s_addr.setText(data.get('address', ''))
-                    self.s_mol.setText(data.get('mol', ''))
-                    self.s_phone1.setText(data.get('phone1', ''))
-                    self.s_phone2.setText(data.get('phone2', ''))
-                    self.s_vat_reg.setChecked(data.get('vat_registered', False))
-                    
-                    # Tech (handle old keys 'tech_name1' vs new/restored 'tech_f')
-                    self.s_tech_f.setText(data.get('tech_f', data.get('tech_name1', '')))
-                    self.s_tech_m.setText(data.get('tech_m', data.get('tech_name2', '')))
-                    self.s_tech_l.setText(data.get('tech_l', data.get('tech_name3', '')))
-                    self.s_tech_egn.setText(data.get('tech_egn', ''))
+                    local_data = json.load(f)
+                    self.server_ip.setText(local_data.get('server_url', ''))
+                    self.c_autorun.setChecked(local_data.get('autorun', False))
+                    # Mode is handled by radio buttons in init_network_tab
             except Exception as e:
-                print(f"Error loading settings: {e}")
+                print(f"Error loading local settings: {e}")
 
     def save_settings(self):
-        import json
-        data = {
-            # Service Firm
-            'name': self.s_name.text().strip(),
-            'eik': self.s_eik.text().strip(),
-            'vat': self.s_vat.text().strip(),
-            'city': self.s_city.text().strip(),
-            'post': self.s_post.text().strip(),
-            'address': self.s_addr.text().strip(),
-            'mol': self.s_mol.text().strip(),
-            'phone1': self.s_phone1.text().strip(),
-            'phone2': self.s_phone2.text().strip(),
-            'vat_registered': self.s_vat_reg.isChecked(),
-            
-            # Tech
-            'tech_f': self.s_tech_f.text().strip(),
-            'tech_m': self.s_tech_m.text().strip(),
-            'tech_l': self.s_tech_l.text().strip(),
-            'tech_egn': self.s_tech_egn.text().strip(),
-            # Save as old keys too for compatibility if needed elsewhere
-            'tech_name1': self.s_tech_f.text().strip(),
-            'tech_name2': self.s_tech_m.text().strip(),
-            'tech_name3': self.s_tech_l.text().strip()
-        }
-        
-        from path_utils import get_app_root
-        data_dir = os.path.join(get_app_root(), "data")
-        os.makedirs(data_dir, exist_ok=True)
+        from database import set_setting
         
         try:
-            with open(os.path.join(data_dir, "settings.json"), 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            # 1. Save Synchronized Settings to Database
+            set_setting('name', self.s_name.text().strip())
+            set_setting('eik', self.s_eik.text().strip())
+            set_setting('vat', self.s_vat.text().strip())
+            set_setting('city', self.s_city.text().strip())
+            set_setting('post', self.s_post.text().strip())
+            set_setting('address', self.s_addr.text().strip())
+            set_setting('mol', self.s_mol.text().strip())
+            set_setting('phone1', self.s_phone1.text().strip())
+            set_setting('phone2', self.s_phone2.text().strip())
+            set_setting('vat_registered', str(self.s_vat_reg.isChecked()))
             
-            # Save Sync Settings
+            set_setting('tech_f', self.s_tech_f.text().strip())
+            set_setting('tech_m', self.s_tech_m.text().strip())
+            set_setting('tech_l', self.s_tech_l.text().strip())
+            set_setting('tech_egn', self.s_tech_egn.text().strip())
+
+            # 2. Save Local Settings to JSON
+            from path_utils import get_app_root
+            data_dir = os.path.join(get_app_root(), "data")
+            os.makedirs(data_dir, exist_ok=True)
+            
+            # Read existing to preserve keys we don't manage here (like last_sync_time)
+            local_data = {}
+            settings_path = os.path.join(data_dir, "settings.json")
+            if os.path.exists(settings_path):
+                import json
+                try:
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        local_data = json.load(f)
+                except: pass
+            
             mode = "server" if self.radio_server.isChecked() else "client"
             url = self.server_ip.text().strip()
+            autorun = self.c_autorun.isChecked()
+            
+            local_data['server_url'] = url
+            local_data['mode'] = mode
+            
+            # If autorun changed, update registry
+            if local_data.get('autorun') != autorun:
+                from main import set_autorun
+                set_autorun(autorun)
+                local_data['autorun'] = autorun
+
+            import json
+            with open(settings_path, 'w', encoding='utf-8') as f:
+                json.dump(local_data, f, ensure_ascii=False, indent=2)
+            
+            # Trigger sync manager update
             from sync_manager import SyncManager
             temp = SyncManager() 
             temp.save_settings(url, mode)

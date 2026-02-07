@@ -2,6 +2,7 @@ import sqlite3
 import os
 from typing import Optional, List, Dict, Tuple, Any
 from datetime import datetime
+import uuid
 from path_utils import get_app_root
 DB_PATH = os.path.join(get_app_root(), "data", "contracts.db")
 
@@ -18,15 +19,47 @@ def get_connection():
         print(f"Database connection error: {e}")
         raise
 
+def ensure_column_exists(table: str, column: str, type_def: str, default_val: Any = None):
+    """Helper to add a column if it doesn't exist"""
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        cur.execute(f"PRAGMA table_info({table})")
+        cols = [c[1] for c in cur.fetchall()]
+        if column not in cols:
+            print(f"Adding column {column} to {table}...")
+            # 1. Add column without DEFAULT to avoid syntax issues with functions in ALTER TABLE
+            alter_query = f"ALTER TABLE {table} ADD COLUMN {column} {type_def}"
+            cur.execute(alter_query)
+            con.commit()
+            
+            # 2. Apply default value if provided using a separate UPDATE
+            if default_val is not None:
+                print(f"Setting default value for {column} in {table}...")
+                if isinstance(default_val, str) and not ('(' in default_val and ')' in default_val):
+                    update_val = f"'{default_val}'"
+                else:
+                    update_val = str(default_val)
+                
+                cur.execute(f"UPDATE {table} SET {column} = {update_val} WHERE {column} IS NULL")
+                con.commit()
+                
+            print(f"Column {column} added to {table} successfully.")
+    except Exception as e:
+        print(f"Error adding column {column} to {table}: {e}")
+    finally:
+        con.close()
+
 
 def init_db():
     """Initialize database with all tables"""
-    con = None
     try:
         con = get_connection()
         cur = con.cursor()
 
-        # Clients table - stores company/contract information
+        # 1. Table Creation (Base Schema)
+        
+        # Clients table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS clients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,12 +76,12 @@ def init_db():
                 mol TEXT,
                 phone1 TEXT,
                 phone2 TEXT,
-                last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 is_deleted INTEGER DEFAULT 0
             )
         """)
 
-        # Devices table - stores fiscal device information
+        # Devices table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS devices (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,26 +96,30 @@ def init_db():
                 certificate_expiry DATE,
                 serial_number TEXT,
                 fiscal_memory TEXT,
-                last_modified TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                nra_report_enabled INTEGER DEFAULT 1,
+                nra_report_month TEXT,
+                nra_td TEXT DEFAULT 'СОФИЯ',
+                bim_model TEXT,
+                bim_date DATE,
+                maintenance_price REAL DEFAULT 0,
+                last_renewed_at DATE,
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                updated_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 is_deleted INTEGER DEFAULT 0,
                 FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
             )
         """)
 
-        # Certificates table - stores certificate numbers and expiry dates from BIM
+        # Certificates table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS certificates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 number TEXT UNIQUE NOT NULL,
-                expiry_date DATE
+                expiry_date DATE,
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime'))
             )
         """)
-
-        # Create indexes for faster searches
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_contract_number ON clients(contract_number)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_eik ON clients(eik)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_serial ON devices(serial_number)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_client_id ON devices(client_id)")
 
         # Users table
         cur.execute("""
@@ -91,7 +128,34 @@ def init_db():
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 full_name TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                role TEXT DEFAULT 'user',
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
+
+        # Global Settings table (Synchronized)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS global_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime'))
+            )
+        """)
+
+        # Products table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                uuid TEXT UNIQUE,
+                name TEXT NOT NULL,
+                category TEXT,
+                price REAL NOT NULL,
+                currency TEXT DEFAULT 'BGN',
+                description TEXT,
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                updated_at TIMESTAMP DEFAULT (datetime('now', 'localtime'))
             )
         """)
 
@@ -103,12 +167,14 @@ def init_db():
                 username TEXT,
                 action TEXT NOT NULL,
                 details TEXT,
-                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                contract_number TEXT,
+                device_id INTEGER,
+                timestamp TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
             )
         """)
 
-        # Repair History table - stores generated repair protocols
+        # Repair History table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS repair_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -116,112 +182,118 @@ def init_db():
                 problem_description TEXT,
                 repair_date DATE,
                 protocol_path TEXT,
+                last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE
             )
         """)
 
         con.commit()
         
-        # Check if we need to create default admin
+        # 2. Sequential Migrations (Using ensure_column_exists for total isolation)
+        
+        # Devices migrations
+        ensure_column_exists("devices", "created_at", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("devices", "updated_at", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("devices", "nra_report_enabled", "INTEGER DEFAULT 1")
+        ensure_column_exists("devices", "nra_report_month", "TEXT")
+        ensure_column_exists("devices", "nra_td", "TEXT", "СОФИЯ")
+        ensure_column_exists("devices", "bim_model", "TEXT")
+        ensure_column_exists("devices", "bim_date", "DATE")
+        ensure_column_exists("devices", "maintenance_price", "REAL DEFAULT 0")
+        ensure_column_exists("devices", "last_renewed_at", "DATE")
+        ensure_column_exists("devices", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("devices", "is_deleted", "INTEGER DEFAULT 0")
+
+        # Clients migrations
+        ensure_column_exists("clients", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("clients", "is_deleted", "INTEGER DEFAULT 0")
+
+        # Audit Logs migrations
+        ensure_column_exists("audit_logs", "contract_number", "TEXT")
+        ensure_column_exists("audit_logs", "device_id", "INTEGER")
+        ensure_column_exists("audit_logs", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Users migrations
+        ensure_column_exists("users", "role", "TEXT", "user")
+        ensure_column_exists("users", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Products migrations
+        ensure_column_exists("products", "uuid", "TEXT")
+        ensure_column_exists("products", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("products", "is_deleted", "INTEGER DEFAULT 0")
+        ensure_column_exists("products", "created_at", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("products", "updated_at", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Repair History migrations
+        ensure_column_exists("repair_history", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Certificates migrations
+        ensure_column_exists("certificates", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Global Settings migrations
+        ensure_column_exists("global_settings", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Other initializations (Admin user, indexes)
+        con = get_connection()
+        cur = con.cursor()
+        
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_contract_number ON clients(contract_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_eik ON clients(eik)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_serial ON devices(serial_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_client_id ON devices(client_id)")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_product_uuid ON products(uuid)")
+        
         cur.execute("SELECT count(*) FROM users")
         if cur.fetchone()[0] == 0:
             try:
                 from auth import hash_password
                 from super_admin_manager import save_super_admin
-                # Default creds: vladpos / V!adp0s
                 pwd_hash = hash_password("V!adp0s")
                 cur.execute("""
-                    INSERT INTO users (username, password_hash, full_name)
-                    VALUES (?, ?, ?)
-                """, ("vladpos", pwd_hash, "Администратор"))
+                    INSERT INTO users (username, password_hash, full_name, role, last_modified)
+                    VALUES (?, ?, ?, ?, datetime('now', 'localtime'))
+                """, ("vladpos", pwd_hash, "Администратор", "admin"))
                 con.commit()
-                
-                # Save super admin to encrypted storage
                 save_super_admin("vladpos", pwd_hash, "Администратор")
             except Exception as e:
-                print(f"Error creating default user: {e}")
-        
-        # Migration: Add new columns if they don't exist
-        cur.execute("PRAGMA table_info(devices)")
-        columns = [col[1] for col in cur.fetchall()]
-        
-        new_cols = [
-            ("created_at", "TIMESTAMP"),
-            ("updated_at", "TIMESTAMP"),
-            ("nra_report_enabled", "INTEGER DEFAULT 1"),
-            ("nra_report_month", "TEXT"),
-            ("nra_td", "TEXT DEFAULT 'СОФИЯ'"),
-            ("bim_model", "TEXT"),
-            ("bim_date", "DATE"),
-            ("maintenance_price", "REAL DEFAULT 0"),
-            ("last_renewed_at", "DATE"),
-            ("last_modified", "TIMESTAMP"),
-            ("is_deleted", "INTEGER DEFAULT 0")
-        ]
-        
-        for col_name, col_type in new_cols:
-            if col_name not in columns:
-                cur.execute(f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}")
-                # Set default value for timestamps manually after adding
-                if col_name in ["created_at", "updated_at", "last_modified"]:
-                    cur.execute(f"UPDATE devices SET {col_name} = CURRENT_TIMESTAMP WHERE {col_name} IS NULL")
-
-        # Migration: Add sync columns to clients
-        cur.execute("PRAGMA table_info(clients)")
-        client_cols = [col[1] for col in cur.fetchall()]
-        if "last_modified" not in client_cols:
-            cur.execute("ALTER TABLE clients ADD COLUMN last_modified TIMESTAMP")
-            cur.execute("UPDATE clients SET last_modified = CURRENT_TIMESTAMP WHERE last_modified IS NULL")
-        if "is_deleted" not in client_cols:
-            cur.execute("ALTER TABLE clients ADD COLUMN is_deleted INTEGER DEFAULT 0")
-        
-        # Migration: Add contract_number and device_id to audit_logs for history tracking
-        cur.execute("PRAGMA table_info(audit_logs)")
-        audit_columns = [col[1] for col in cur.fetchall()]
-        
-        audit_new_cols = [
-            ("contract_number", "TEXT"),
-            ("device_id", "INTEGER")
-        ]
-        
-        for col_name, col_type in audit_new_cols:
-            if col_name not in audit_columns:
-                cur.execute(f"ALTER TABLE audit_logs ADD COLUMN {col_name} {col_type}")
+                print(f"Error creating default admin: {e}")
         
         con.commit()
         
-        # Migration: Add role column to users
-        cur.execute("PRAGMA table_info(users)")
-        user_columns = [col[1] for col in cur.fetchall()]
-        
-        if "role" not in user_columns:
-            cur.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
-            # Set vladpos as admin
-            cur.execute("UPDATE users SET role = 'admin' WHERE username = 'vladpos'")
-            con.commit()
-            
-        # Products table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                category TEXT,
-                price REAL NOT NULL,
-                currency TEXT DEFAULT 'BGN',
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-
+        # Generate UUIDs for products that don't have them
+        cur.execute("SELECT id FROM products WHERE uuid IS NULL")
+        rows = cur.fetchall()
+        for row in rows:
+            new_uuid = str(uuid.uuid4())
+            cur.execute("UPDATE products SET uuid = ? WHERE id = ?", (new_uuid, row[0]))
         con.commit()
+        
+        # Migrate settings from JSON if table is empty
+        cur.execute("SELECT count(*) FROM global_settings")
+        if cur.fetchone()[0] == 0:
+            from path_utils import get_app_root
+            settings_path = os.path.join(get_app_root(), "data", "settings.json")
+            if os.path.exists(settings_path):
+                import json
+                try:
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        for k, v in data.items():
+                            # Only migrate non-local keys
+                            if k not in ['server_url', 'mode', 'last_sync_time', 'autorun']:
+                                cur.execute("INSERT OR REPLACE INTO global_settings (key, value, last_modified) VALUES (?, ?, ?)", 
+                                           (k, str(v), now_str))
+                    con.commit()
+                except Exception as e:
+                    print(f"Migration error: {e}")
+
+        con.close()
+        print("Database initialization and migration completed successfully.")
+
     except Exception as e:
-        print(f"Database initialization error: {e}")
-        if con: con.rollback()
-    finally:
+        print(f"CRITICAL: Database initialization failed: {e}")
         if con: con.close()
-
-
 # ============= CLIENT OPERATIONS =============
 
 def add_client(data: Dict[str, Any]) -> int:
@@ -237,7 +309,7 @@ def add_client(data: Dict[str, Any]) -> int:
                 company_name, city, postal_code, address,
                 eik, vat_registered, mol, phone1, phone2,
                 last_modified
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
         """, (
             data.get('contract_number'),
             data.get('status'),
@@ -387,7 +459,7 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
             serial_number, fiscal_memory,
             nra_report_enabled, nra_report_month, nra_td, bim_model, bim_date,
             maintenance_price, last_renewed_at, last_modified
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?)
     """, (
         client_id,
         data.get('fdrid'),
@@ -406,7 +478,7 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
         data.get('bim_model'),
         data.get('bim_date'),
         data.get('maintenance_price', 0),
-        datetime.now().isoformat()
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ))
     
     device_id = cur.lastrowid
@@ -451,7 +523,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         client_data.get('mol'),
         client_data.get('phone1'),
         client_data.get('phone2'),
-        datetime.now().isoformat(),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         client_id
     ))
     
@@ -463,7 +535,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
             serial_number = ?, fiscal_memory = ?,
             nra_report_enabled = ?, nra_report_month = ?, nra_td = ?, bim_model = ?, bim_date = ?,
             maintenance_price = ?,
-            updated_at = CURRENT_TIMESTAMP,
+            updated_at = datetime('now', 'localtime'),
             last_modified = ?
         WHERE id = ?
     """, (
@@ -483,7 +555,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         device_data.get('bim_model'),
         device_data.get('bim_date'),
         device_data.get('maintenance_price', 0),
-        datetime.now().isoformat(),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         device_id
     ))
     
@@ -791,9 +863,9 @@ def add_certificate(number: str, expiry_date: str) -> bool:
     cur = con.cursor()
     try:
         cur.execute("""
-            INSERT INTO certificates (number, expiry_date) 
-            VALUES (?, ?)
-            ON CONFLICT(number) DO UPDATE SET expiry_date = excluded.expiry_date
+            INSERT INTO certificates (number, expiry_date, last_modified) 
+            VALUES (?, ?, datetime('now', 'localtime'))
+            ON CONFLICT(number) DO UPDATE SET expiry_date = excluded.expiry_date, last_modified = datetime('now', 'localtime')
         """, (number, expiry_date))
         con.commit()
         con.close()
@@ -820,8 +892,8 @@ def add_user(username: str, password_hash: str, full_name: str, role: str = "use
     cur = con.cursor()
     try:
         cur.execute("""
-            INSERT INTO users (username, password_hash, full_name, role)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO users (username, password_hash, full_name, role, last_modified)
+            VALUES (?, ?, ?, ?, datetime('now', 'localtime'))
         """, (username, password_hash, full_name, role))
         con.commit()
         con.close()
@@ -878,13 +950,13 @@ def update_user(user_id: int, full_name: str, role: str, password_hash: Optional
         if password_hash:
             cur.execute("""
                 UPDATE users 
-                SET full_name = ?, role = ?, password_hash = ?
+                SET full_name = ?, role = ?, password_hash = ?, last_modified = datetime('now', 'localtime')
                 WHERE id = ?
             """, (full_name, role, password_hash, user_id))
         else:
             cur.execute("""
                 UPDATE users 
-                SET full_name = ?, role = ?
+                SET full_name = ?, role = ?, last_modified = datetime('now', 'localtime')
                 WHERE id = ?
             """, (full_name, role, user_id))
         con.commit()
@@ -920,9 +992,9 @@ def log_action(user_id: Optional[int], username: str, action: str, details: str 
         local_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         cur.execute("""
-            INSERT INTO audit_logs (user_id, username, action, details, timestamp, contract_number, device_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, username, action, details, local_time, contract_number, device_id))
+            INSERT INTO audit_logs (user_id, username, action, details, timestamp, contract_number, device_id, last_modified)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, username, action, details, local_time, contract_number, device_id, local_time))
         con.commit()
     except:
         pass # Logging should not break app flow
@@ -931,16 +1003,24 @@ def log_action(user_id: Optional[int], username: str, action: str, details: str 
 
 
 def get_device_history(device_id: int):
-    """Get audit history for a specific device"""
+    """Get audit history + repair history for a specific device"""
     con = get_connection()
     cur = con.cursor()
     
+    # Union of audit logs and repair history for a unified view
     cur.execute("""
         SELECT timestamp, username, action, details
         FROM audit_logs
         WHERE device_id = ?
-        ORDER BY id DESC
-    """, (device_id,))
+        
+        UNION ALL
+        
+        SELECT repair_date || ' 00:00:00', 'Система', 'Ремонт', problem_description
+        FROM repair_history
+        WHERE device_id = ?
+        
+        ORDER BY timestamp DESC
+    """, (device_id, device_id))
     
     rows = cur.fetchall()
     con.close()
@@ -949,16 +1029,26 @@ def get_device_history(device_id: int):
 
 
 def get_contract_history(contract_number: str):
-    """Get audit history for a specific contract"""
+    """Get audit history + repair history for a specific contract"""
     con = get_connection()
     cur = con.cursor()
     
+    # Union of audit logs and repair history for all devices in this contract
     cur.execute("""
         SELECT timestamp, username, action, details
         FROM audit_logs
         WHERE contract_number = ?
-        ORDER BY id DESC
-    """, (contract_number,))
+        
+        UNION ALL
+        
+        SELECT r.repair_date || ' 00:00:00', 'Система', 'Ремонт', r.problem_description
+        FROM repair_history r
+        JOIN devices d ON r.device_id = d.id
+        JOIN clients c ON d.client_id = c.id
+        WHERE c.contract_number = ?
+        
+        ORDER BY timestamp DESC
+    """, (contract_number, contract_number))
     
     rows = cur.fetchall()
     con.close()
@@ -973,8 +1063,8 @@ def add_repair_record(device_id: int, problem: str, date_str: str, path: str = "
     con = get_connection()
     cur = con.cursor()
     cur.execute("""
-        INSERT INTO repair_history (device_id, problem_description, repair_date, protocol_path)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO repair_history (device_id, problem_description, repair_date, protocol_path, last_modified)
+        VALUES (?, ?, ?, ?, datetime('now', 'localtime'))
     """, (device_id, problem, date_str, path))
     record_id = cur.lastrowid
     con.commit()
@@ -1012,15 +1102,19 @@ def add_product(data: Dict[str, Any]) -> int:
     """Add a new product"""
     con = get_connection()
     cur = con.cursor()
+    new_uuid = str(uuid.uuid4())
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur.execute("""
-        INSERT INTO products (name, category, price, currency, description)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO products (uuid, name, category, price, currency, description, last_modified)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     """, (
+        new_uuid,
         data.get('name'),
         data.get('category'),
         data.get('price'),
         data.get('currency', 'BGN'),
-        data.get('description')
+        data.get('description'),
+        now_str
     ))
     product_id = cur.lastrowid
     con.commit()
@@ -1032,10 +1126,12 @@ def update_product(product_id: int, data: Dict[str, Any]) -> bool:
     """Update an existing product"""
     con = get_connection()
     cur = con.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     cur.execute("""
         UPDATE products SET
             name = ?, category = ?, price = ?, currency = ?, description = ?,
-            updated_at = CURRENT_TIMESTAMP
+            updated_at = ?,
+            last_modified = ?
         WHERE id = ?
     """, (
         data.get('name'),
@@ -1043,6 +1139,8 @@ def update_product(product_id: int, data: Dict[str, Any]) -> bool:
         data.get('price'),
         data.get('currency'),
         data.get('description'),
+        now_str,
+        now_str,
         product_id
     ))
     updated = cur.rowcount > 0
@@ -1052,10 +1150,59 @@ def update_product(product_id: int, data: Dict[str, Any]) -> bool:
 
 
 def delete_product(product_id: int) -> bool:
-    """Delete a product"""
+    """Soft-delete a product (mark as deleted)"""
     con = get_connection()
     cur = con.cursor()
-    cur.execute("DELETE FROM products WHERE id = ?", (product_id,))
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+        UPDATE products SET
+            is_deleted = 1,
+            last_modified = ?
+        WHERE id = ?
+    """, (now_str, product_id))
+    deleted = cur.rowcount > 0
+    con.commit()
+    con.close()
+    return deleted
+
+
+# ============= GLOBAL SETTINGS (Synchronized) =============
+
+def get_setting(key: str, default=None) -> Any:
+    """Get a synchronized setting from DB"""
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute("SELECT value FROM global_settings WHERE key = ?", (key,))
+    row = cur.fetchone()
+    con.close()
+    return row[0] if row else default
+
+def set_setting(key: str, value: Any):
+    """Save a synchronized setting to DB"""
+    con = get_connection()
+    cur = con.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("INSERT OR REPLACE INTO global_settings (key, value, last_modified) VALUES (?, ?, ?)",
+               (key, str(value), now_str))
+    con.commit()
+    con.close()
+
+def get_all_settings() -> List[Dict[str, Any]]:
+    """Get all synchronized settings"""
+    con = get_connection()
+    cur = con.cursor()
+    cur.execute("SELECT key, value, last_modified FROM global_settings")
+    rows = cur.fetchall()
+    con.close()
+    return [{'key': r[0], 'value': r[1], 'last_modified': r[2]} for r in rows]
+    """Delete a product (soft-delete)"""
+    con = get_connection()
+    cur = con.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cur.execute("""
+        UPDATE products SET is_deleted = 1, last_modified = ?
+        WHERE id = ?
+    """, (now_str, product_id))
     deleted = cur.rowcount > 0
     con.commit()
     con.close()
@@ -1066,7 +1213,12 @@ def get_all_products() -> List[Dict[str, Any]]:
     """Get all products"""
     con = get_connection()
     cur = con.cursor()
-    cur.execute("SELECT id, name, category, price, currency, description, created_at FROM products ORDER BY category, name")
+    cur.execute("""
+        SELECT id, uuid, name, category, price, currency, description, created_at 
+        FROM products 
+        WHERE is_deleted = 0
+        ORDER BY category, name
+    """)
     rows = cur.fetchall()
     con.close()
     
@@ -1074,12 +1226,13 @@ def get_all_products() -> List[Dict[str, Any]]:
     for row in rows:
         products.append({
             'id': row[0],
-            'name': row[1],
-            'category': row[2],
-            'price': row[3],
-            'currency': row[4],
-            'description': row[5],
-            'created_at': row[6]
+            'uuid': row[1],
+            'name': row[2],
+            'category': row[3],
+            'price': row[4],
+            'currency': row[5],
+            'description': row[6],
+            'created_at': row[7]
         })
     return products
 
@@ -1089,9 +1242,9 @@ def search_products(query: str) -> List[Dict[str, Any]]:
     cur = con.cursor()
     search = f"%{query}%"
     cur.execute("""
-        SELECT id, name, category, price, currency, description, created_at 
+        SELECT id, uuid, name, category, price, currency, description, created_at 
         FROM products 
-        WHERE name LIKE ? OR category LIKE ? OR description LIKE ?
+        WHERE (name LIKE ? OR category LIKE ? OR description LIKE ?) AND is_deleted = 0
         ORDER BY category, name
     """, (search, search, search))
     rows = cur.fetchall()
@@ -1101,12 +1254,13 @@ def search_products(query: str) -> List[Dict[str, Any]]:
     for row in rows:
         products.append({
             'id': row[0],
-            'name': row[1],
-            'category': row[2],
-            'price': row[3],
-            'currency': row[4],
-            'description': row[5],
-            'created_at': row[6]
+            'uuid': row[1],
+            'name': row[2],
+            'category': row[3],
+            'price': row[4],
+            'currency': row[5],
+            'description': row[6],
+            'created_at': row[7]
         })
     return products
 

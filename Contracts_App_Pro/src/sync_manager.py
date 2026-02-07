@@ -20,7 +20,7 @@ class SyncManager(QObject):
         super().__init__()
         self.mode = "client" # Default
         self.server_url = self.load_server_url()
-        self.last_sync_time = "2000-01-01T00:00:00"
+        self.last_sync_time = "2000-01-01 00:00:00"
         self.is_running = False
         self.thread = None
 
@@ -30,7 +30,9 @@ class SyncManager(QObject):
                 with open(SETTINGS_PATH, 'r') as f:
                     data = json.load(f)
                     self.mode = data.get("mode", "client")
-                    self.last_sync_time = data.get("last_sync_time", "2000-01-01T00:00:00")
+                    self.last_sync_time = data.get("last_sync_time", "2000-01-01 00:00:00")
+                    # Convert T back to space if found in old settings
+                    self.last_sync_time = self.last_sync_time.replace('T', ' ')
                     return data.get("server_url", "http://localhost:8000")
             except:
                 return "http://localhost:8000"
@@ -75,7 +77,7 @@ class SyncManager(QObject):
             self.push_changes()
             self.pull_changes()
             
-            self.last_sync_time = datetime.now().isoformat()
+            self.last_sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # Persist last sync time
             self.save_settings(self.server_url, self.mode)
             
@@ -115,7 +117,7 @@ class SyncManager(QObject):
         cur = con.cursor()
         
         # 1. Get modified clients
-        cur.execute("SELECT * FROM clients WHERE last_modified > ?", (self.last_sync_time,))
+        cur.execute("SELECT * FROM clients WHERE last_modified >= ?", (self.last_sync_time,))
         cols = [d[0] for d in cur.description]
         clients = [dict(zip(cols, row)) for row in cur.fetchall()]
         
@@ -124,7 +126,7 @@ class SyncManager(QObject):
             SELECT d.*, c.contract_number as parent_contract_number 
             FROM devices d
             JOIN clients c ON d.client_id = c.id
-            WHERE d.last_modified > ?
+            WHERE d.last_modified >= ?
         """, (self.last_sync_time,))
         cols = [d[0] for d in cur.description]
         devices = []
@@ -132,9 +134,44 @@ class SyncManager(QObject):
             d_dict = dict(zip(cols, row))
             devices.append(d_dict)
         
+        # 3. Get modified users
+        cur.execute("SELECT * FROM users WHERE last_modified >= ?", (self.last_sync_time,))
+        cols = [d[0] for d in cur.description]
+        users = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # 4. Get modified products
+        cur.execute("SELECT * FROM products WHERE last_modified >= ?", (self.last_sync_time,))
+        cols = [d[0] for d in cur.description]
+        products = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # 5. Get modified repair history - include serial number for mapping
+        cur.execute("""
+            SELECT r.*, d.serial_number 
+            FROM repair_history r
+            JOIN devices d ON r.device_id = d.id
+            WHERE r.last_modified >= ?
+        """, (self.last_sync_time,))
+        cols = [d[0] for d in cur.description]
+        repairs = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # 6. Get modified certificates
+        cur.execute("SELECT * FROM certificates WHERE last_modified >= ?", (self.last_sync_time,))
+        cols = [d[0] for d in cur.description]
+        certificates = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # 7. Get modified global settings
+        cur.execute("SELECT * FROM global_settings WHERE last_modified >= ?", (self.last_sync_time,))
+        cols = [d[0] for d in cur.description]
+        settings = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # 7. Get modified audit logs
+        cur.execute("SELECT * FROM audit_logs WHERE last_modified > ?", (self.last_sync_time,))
+        cols = [d[0] for d in cur.description]
+        audit_logs = [dict(zip(cols, row)) for row in cur.fetchall()]
+        
         con.close()
         
-        if not clients and not devices:
+        if not any([clients, devices, users, products, repairs, certificates, audit_logs, settings]):
             return
 
         payload = {
@@ -146,10 +183,23 @@ class SyncManager(QObject):
             payload["items"].append({"table": "clients", "data": c})
         for d in devices:
             payload["items"].append({"table": "devices", "data": d})
+        for u in users:
+            payload["items"].append({"table": "users", "data": u})
+        for p in products:
+            payload["items"].append({"table": "products", "data": p})
+        for r in repairs:
+            payload["items"].append({"table": "repair_history", "data": r})
+        for c in certificates:
+            payload["items"].append({"table": "certificates", "data": c})
+        for a in audit_logs:
+            payload["items"].append({"table": "audit_logs", "data": a})
+        for s in settings:
+            payload["items"].append({"table": "global_settings", "data": s})
             
         try:
             requests.post(f"{self.server_url}/sync/push", json=payload, timeout=5)
-        except Exception:
+        except Exception as e:
+            print(f"PUSH ERROR: {e}")
             pass
 
     def pull_changes(self):
@@ -226,5 +276,104 @@ class SyncManager(QObject):
                 # Since we don't have contract_number in device payload directly, we skip insert to avoid orphans
                 pass 
                 
+        con.commit()
+        
+        # 3. Users Sync (Upsert to avoid primary key collisions)
+        for u in data.get("users", []):
+            un = u.get('username')
+            if not un: continue
+            
+            cur.execute("SELECT id, last_modified FROM users WHERE username = ?", (un,))
+            exists = cur.fetchone()
+            clean_data = {k: v for k, v in u.items() if k != 'id'}
+            
+            if exists:
+                if (u.get('last_modified') or '') > (exists[1] or ''):
+                     clauses = ", ".join([f"{k}=?" for k in clean_data.keys()])
+                     vals = list(clean_data.values()) + [exists[0]]
+                     cur.execute(f"UPDATE users SET {clauses} WHERE id=?", vals)
+            else:
+                 cols = ", ".join(clean_data.keys())
+                 placeholders = ", ".join(["?"] * len(clean_data))
+                 cur.execute(f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(clean_data.values()))
+
+        # 4. Products Sync (Match by uuid)
+        for p in data.get("products", []):
+            u = p.get('uuid')
+            if not u: continue
+            
+            cur.execute("SELECT id, last_modified FROM products WHERE uuid = ?", (u,))
+            exists = cur.fetchone()
+            clean_data = {k: v for k, v in p.items() if k != 'id'}
+            
+            if exists:
+                if (p.get('last_modified') or '') >= (exists[1] or ''):
+                     clauses = ", ".join([f"{k}=?" for k in clean_data.keys()])
+                     vals = list(clean_data.values()) + [exists[0]]
+                     cur.execute(f"UPDATE products SET {clauses} WHERE id=?", vals)
+            else:
+                 cols = ", ".join(clean_data.keys())
+                 placeholders = ", ".join(["?"] * len(clean_data))
+                 cur.execute(f"INSERT INTO products ({cols}) VALUES ({placeholders})", list(clean_data.values()))
+                 
+        # 5. Repairs (Match by unique composite: device_id + date + problem)
+        # We use the serial_number in the payload to find the local device_id
+        for r in data.get("repair_history", []):
+            sn = r.get('serial_number')
+            if not sn: continue
+            
+            # Find local device_id
+            cur.execute("SELECT id FROM devices WHERE serial_number = ?", (sn,))
+            dev_res = cur.fetchone()
+            if not dev_res: continue
+            
+            dev_id = dev_res[0]
+            date_r = r.get('repair_date')
+            prob = r.get('problem_description')
+            
+            cur.execute("SELECT id FROM repair_history WHERE device_id=? AND repair_date=? AND problem_description=?", (dev_id, date_r, prob))
+            exists = cur.fetchone()
+            
+            clean_data = {k: v for k, v in r.items() if k not in ['id', 'serial_number']}
+            clean_data['device_id'] = dev_id
+            
+            if not exists:
+                 cols = ", ".join(clean_data.keys())
+                 placeholders = ", ".join(["?"] * len(clean_data))
+                 cur.execute(f"INSERT INTO repair_history ({cols}) VALUES ({placeholders})", list(clean_data.values()))
+
+        # 6. Certificates (Match by number)
+        for cert in data.get("certificates", []):
+            num = cert.get('number')
+            if not num: continue
+            
+            cur.execute("SELECT id, last_modified FROM certificates WHERE number = ?", (num,))
+            exists = cur.fetchone()
+            clean_data = {k: v for k, v in cert.items() if k != 'id'}
+            
+            if exists:
+                if (cert.get('last_modified') or '') > (exists[1] or ''):
+                     clauses = ", ".join([f"{k}=?" for k in clean_data.keys()])
+                     vals = list(clean_data.values()) + [exists[0]]
+                     cur.execute(f"UPDATE certificates SET {clauses} WHERE id=?", vals)
+            else:
+                 cols = ", ".join(clean_data.keys())
+                 placeholders = ", ".join(["?"] * len(clean_data))
+                 cur.execute(f"INSERT INTO certificates ({cols}) VALUES ({placeholders})", list(clean_data.values()))
+
+        # 7. Audit Logs Sync (Match by timestamp, username, action)
+        for a in data.get("audit_logs", []):
+            ts = a.get('timestamp')
+            user = a.get('username')
+            act = a.get('action')
+            
+            if ts and user and act:
+                cur.execute("SELECT id FROM audit_logs WHERE timestamp=? AND username=? AND action=?", (ts, user, act))
+                if not cur.fetchone():
+                    clean_data = {k: v for k, v in a.items() if k != 'id'}
+                    cols = ", ".join(clean_data.keys())
+                    placeholders = ", ".join(["?"] * len(clean_data))
+                    cur.execute(f"INSERT INTO audit_logs ({cols}) VALUES ({placeholders})", list(clean_data.values()))
+                    
         con.commit()
         con.close()

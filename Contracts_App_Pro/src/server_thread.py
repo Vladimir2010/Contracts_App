@@ -38,7 +38,7 @@ class SyncPushRequest(BaseModel):
 
 @app.get("/status")
 def status():
-    return {"status": "running", "server_time": datetime.now().isoformat()}
+    return {"status": "running", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 @app.post("/sync/pull")
 def pull_changes(req: SyncPullRequest):
@@ -46,20 +46,56 @@ def pull_changes(req: SyncPullRequest):
     con = get_connection()
     cur = con.cursor()
     
-    response = {"clients": [], "devices": []}
+    response = {"clients": [], "devices": [], "users": [], "products": [], "repair_history": [], "certificates": [], "audit_logs": []}
     
     try:
         # Get changed clients
-        cur.execute(f"SELECT * FROM clients WHERE last_modified > ?", (req.last_sync_time,))
+        cur.execute(f"SELECT * FROM clients WHERE last_modified >= ?", (req.last_sync_time,))
         cols = [description[0] for description in cur.description]
         clients = [dict(zip(cols, row)) for row in cur.fetchall()]
         response["clients"] = clients
         
         # Get changed devices
-        cur.execute(f"SELECT * FROM devices WHERE last_modified > ?", (req.last_sync_time,))
+        cur.execute(f"SELECT * FROM devices WHERE last_modified >= ?", (req.last_sync_time,))
         cols = [description[0] for description in cur.description]
         devices = [dict(zip(cols, row)) for row in cur.fetchall()]
         response["devices"] = devices
+        
+        # Get changed users
+        cur.execute(f"SELECT * FROM users WHERE last_modified >= ?", (req.last_sync_time,))
+        cols = [description[0] for description in cur.description]
+        users = [dict(zip(cols, row)) for row in cur.fetchall()]
+        response["users"] = users
+
+        # Get changed products
+        cur.execute(f"SELECT * FROM products WHERE last_modified >= ?", (req.last_sync_time,))
+        cols = [description[0] for description in cur.description]
+        products = [dict(zip(cols, row)) for row in cur.fetchall()]
+        response["products"] = products
+        
+        # Get changed repairs
+        cur.execute(f"SELECT * FROM repair_history WHERE last_modified >= ?", (req.last_sync_time,))
+        cols = [description[0] for description in cur.description]
+        repairs = [dict(zip(cols, row)) for row in cur.fetchall()]
+        response["repair_history"] = repairs
+        
+        # Get changed certificates
+        cur.execute(f"SELECT * FROM certificates WHERE last_modified >= ?", (req.last_sync_time,))
+        cols = [description[0] for description in cur.description]
+        certificates = [dict(zip(cols, row)) for row in cur.fetchall()]
+        response["certificates"] = certificates
+
+        # Get changed audit logs
+        cur.execute(f"SELECT * FROM audit_logs WHERE last_modified >= ?", (req.last_sync_time,))
+        cols = [description[0] for description in cur.description]
+        audit_logs = [dict(zip(cols, row)) for row in cur.fetchall()]
+        response["audit_logs"] = audit_logs
+        
+        # Get changed global settings
+        cur.execute(f"SELECT * FROM global_settings WHERE last_modified >= ?", (req.last_sync_time,))
+        cols = [description[0] for description in cur.description]
+        settings = [dict(zip(cols, row)) for row in cur.fetchall()]
+        response["global_settings"] = settings
         
     finally:
         con.close()
@@ -130,31 +166,164 @@ def push_changes(req: SyncPushRequest):
                         
                         # 2. Check if device exists
                         cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
-                    if exists:
-                        # Check timestamp to prevent overwriting newer data with old data
-                        # We assume data['last_modified'] exists and is comparable string
-                        incoming_ts = data.get('last_modified', '')
+                        exists = cur.fetchone() # FIX: Added missing fetchone()
                         
-                        # Fetch existing timestamp
-                        cur.execute("SELECT last_modified FROM devices WHERE id=?", (exists[0],))
-                        existing_ts = cur.fetchone()[0]
-                        if not existing_ts: existing_ts = ""
+                        if exists:
+                            # Check timestamp to prevent overwriting newer data with old data
+                            incoming_ts = data.get('last_modified', '')
+                            
+                            # Fetch existing timestamp
+                            cur.execute("SELECT last_modified FROM devices WHERE id=?", (exists[0],))
+                            existing_ts = cur.fetchone()[0]
+                            if not existing_ts: existing_ts = ""
+                            
+                            if incoming_ts > existing_ts:
+                                clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                values = list(data_to_save.values())
+                                cur.execute(f"UPDATE devices SET {clauses} WHERE id=?", (*values, exists[0]))
+                                data_changed = True
+                        else:
+                            cols = ", ".join(data_to_save.keys())
+                            placeholders = ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO devices ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            data_changed = True
+
+            elif table == "users":
+                username = data.get('username')
+                if username:
+                    cur.execute("SELECT id FROM users WHERE username = ?", (username,))
+                    exists = cur.fetchone()
+                    
+                    if exists:
+                        incoming_ts = data.get('last_modified', '')
+                        cur.execute("SELECT last_modified FROM users WHERE id=?", (exists[0],))
+                        ts_row = cur.fetchone()
+                        existing_ts = ts_row[0] if ts_row else ""
                         
                         if incoming_ts > existing_ts:
                             clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
                             values = list(data_to_save.values())
-                            cur.execute(f"UPDATE devices SET {clauses} WHERE id=?", (*values, exists[0]))
+                            cur.execute(f"UPDATE users SET {clauses} WHERE id=?", (*values, exists[0]))
                             data_changed = True
-                        else:
-                            # Server has newer or equal data, ignore client push for this item
-                            pass
                     else:
                         cols = ", ".join(data_to_save.keys())
                         placeholders = ", ".join(["?" for _ in data_to_save])
-                        cur.execute(f"INSERT INTO devices ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                        cur.execute(f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                        data_changed = True
+
+            elif table == "products":
+                u = data.get('uuid')
+                if u:
+                    cur.execute("SELECT id FROM products WHERE uuid = ?", (u,))
+                    exists = cur.fetchone()
+                    
+                    if exists:
+                        incoming_ts = data.get('last_modified', '')
+                        cur.execute("SELECT last_modified FROM products WHERE id=?", (exists[0],))
+                        ts_row = cur.fetchone()
+                        existing_ts = ts_row[0] if ts_row else ""
+                        
+                        if incoming_ts >= existing_ts:
+                            clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                            values = list(data_to_save.values())
+                            cur.execute(f"UPDATE products SET {clauses} WHERE id=?", (*values, exists[0]))
+                            data_changed = True
+                    else:
+                        cols = ", ".join(data_to_save.keys())
+                        placeholders = ", ".join(["?" for _ in data_to_save])
+                        cur.execute(f"INSERT INTO products ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
                         data_changed = True
                 else:
-                    pass
+                    # Fallback for name only (should not happen after migration)
+                    name = data.get('name')
+                    if name:
+                        cur.execute("SELECT id FROM products WHERE name = ?", (name,))
+                        exists = cur.fetchone()
+                        if not exists:
+                            data_to_save['uuid'] = str(uuid.uuid4())
+                            cols = ", ".join(data_to_save.keys())
+                            placeholders = ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO products ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            data_changed = True
+                        
+            elif table == "repair_history":
+                # For repairs, we use serial_number to find the server-side device_id
+                serial = data.get('serial_number')
+                if not serial: continue
+                
+                cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
+                dev_res = cur.fetchone()
+                if not dev_res: continue
+                
+                dev_id = dev_res[0]
+                r_date = data.get('repair_date')
+                prob = data.get('problem_description')
+                
+                # Check if this precise repair already exists
+                cur.execute("SELECT id FROM repair_history WHERE device_id=? AND repair_date=? AND problem_description=?", (dev_id, r_date, prob))
+                exists = cur.fetchone()
+                
+                if not exists:
+                    # Resolve data to save - map to server device_id
+                    rh_data = {k: v for k, v in data_to_save.items() if k != 'serial_number'}
+                    rh_data['device_id'] = dev_id
+                    
+                    cols = ", ".join(rh_data.keys())
+                    placeholders = ", ".join(["?" for _ in rh_data])
+                    cur.execute(f"INSERT INTO repair_history ({cols}) VALUES ({placeholders})", list(rh_data.values()))
+                    data_changed = True
+
+            elif table == "audit_logs":
+                # Match audit logs by timestamp, username and action to avoid duplicates
+                ts = data.get('timestamp')
+                user = data.get('username')
+                act = data.get('action')
+                
+                if ts and user and act:
+                    cur.execute("SELECT id FROM audit_logs WHERE timestamp=? AND username=? AND action=?", (ts, user, act))
+                    if not cur.fetchone():
+                        cols = ", ".join(data_to_save.keys())
+                        placeholders = ", ".join(["?" for _ in data_to_save])
+                        cur.execute(f"INSERT INTO audit_logs ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                        data_changed = True
+                        
+            elif table == "certificates":
+                num = data.get('number')
+                if num:
+                    cur.execute("SELECT id FROM certificates WHERE number = ?", (num,))
+                    exists = cur.fetchone()
+                    
+                    if exists:
+                        incoming_ts = data.get('last_modified', '')
+                        cur.execute("SELECT last_modified FROM certificates WHERE id=?", (exists[0],))
+                        ts_row = cur.fetchone()
+                        existing_ts = ts_row[0] if ts_row else ""
+                        
+                        if incoming_ts > existing_ts:
+                            clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                            values = list(data_to_save.values())
+                            cur.execute(f"UPDATE certificates SET {clauses} WHERE id=?", (*values, exists[0]))
+                            data_changed = True
+                        cur.execute(f"INSERT INTO certificates ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                        data_changed = True
+
+            elif table == "global_settings":
+                key = data.get('key')
+                if key:
+                    cur.execute("SELECT last_modified FROM global_settings WHERE key = ?", (key,))
+                    exists = cur.fetchone()
+                    
+                    incoming_ts = data.get('last_modified', '')
+                    if exists:
+                        existing_ts = exists[0] if exists[0] else ""
+                        if incoming_ts > existing_ts:
+                            cur.execute("UPDATE global_settings SET value = ?, last_modified = ? WHERE key = ?",
+                                       (data.get('value'), incoming_ts, key))
+                            data_changed = True
+                    else:
+                        cur.execute("INSERT INTO global_settings (key, value, last_modified) VALUES (?, ?, ?)",
+                                   (key, data.get('value'), incoming_ts))
+                        data_changed = True
                         
         con.commit()
         if data_changed:
@@ -166,7 +335,7 @@ def push_changes(req: SyncPushRequest):
     finally:
         con.close()
         
-    return {"message": "Sync successful", "server_time": datetime.now().isoformat()}
+    return {"message": "Sync successful", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 # --- Server Thread Class ---
 

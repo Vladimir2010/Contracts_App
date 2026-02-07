@@ -25,6 +25,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer, QSize, QUrl
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QDesktopServices
+from PyQt6.QtWidgets import QSystemTrayIcon
+try:
+    import winreg
+except ImportError:
+    winreg = None
 
 from database import (
     init_db, get_all_devices, search_devices, delete_device,
@@ -80,6 +85,34 @@ class SplashScreen(QSplashScreen):
             # Center the logo in the middle of the remaining space
             logo_x = (canvas_width - scaled_logo.width()) // 2
             logo_y = 150 # Starting after title
+
+def set_autorun(enabled: bool):
+    """Set the application to start automatically with Windows"""
+    if winreg is None:
+        return
+        
+    app_name = "ContractsApp"
+    # Get the path to the executable
+    if getattr(sys, 'frozen', False):
+        # If running as EXE
+        app_path = sys.executable
+    else:
+        # If running as script
+        app_path = os.path.abspath(sys.argv[0])
+        
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
+        if enabled:
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{app_path}"')
+        else:
+            try:
+                winreg.DeleteValue(key, app_name)
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"Error setting autorun: {e}")
+
 
 def backup_database():
     """Backup database to backups/ folder (zipped)"""
@@ -219,6 +252,9 @@ class MainWindow(QMainWindow):
         self.server_thread = None
         self.sync_manager = None
         self.init_sync_system()
+        
+        # Tray Icon
+        self.init_tray_icon()
 
     def setup_device_tab(self):
         layout = QVBoxLayout()
@@ -469,6 +505,8 @@ class MainWindow(QMainWindow):
         dialog = ProductDialog(product_data=data, parent=self)
         if dialog.exec():
             self.refresh_products()
+            if self.current_user:
+                log_action(self.current_user['id'], self.current_user['username'], "EDIT_PRODUCT", f"Updated product: {data['name']}")
 
     def delete_product_action(self):
         selected = self.product_table.selectionModel().selectedRows()
@@ -480,6 +518,8 @@ class MainWindow(QMainWindow):
             product_id = int(self.product_table.item(row, 0).text())
             if delete_product(product_id):
                 self.refresh_products()
+                if self.current_user:
+                    log_action(self.current_user['id'], self.current_user['username'], "DELETE_PRODUCT", f"Deleted product ID: {product_id}")
 
     def show_product_context_menu(self, pos):
         index = self.product_table.indexAt(pos)
@@ -1453,6 +1493,7 @@ class MainWindow(QMainWindow):
             # Connect signal for automatic UI refresh when client pushes data
             if hasattr(self.server_thread, 'signals'):
                 self.server_thread.signals.data_pushed.connect(self.refresh_table)
+                self.server_thread.signals.data_pushed.connect(self.refresh_products)
             
             self.server_thread.start()
             
@@ -1491,11 +1532,79 @@ class MainWindow(QMainWindow):
             timestamp = datetime.now().strftime("%H:%M:%S")
             self.statusBar.showMessage(f"✅ Синхронизирано в {timestamp}")
             self.refresh_table()
+            self.refresh_products()
         else:
             self.statusBar.showMessage(f"⚠️ Грешка при синхронизация: {message}", 10000)
-    
-    def closeEvent(self, event):
-        """Handle app closure"""
+
+    def open_settings(self):
+        """Open settings dialog"""
+        dialog = SettingsDialog(self)
+        if dialog.exec():
+            # Settings were saved, may need to restart for network changes
+            pass
+
+    def perform_sync(self):
+        """Manually trigger a sync iteration"""
+        if self.sync_manager:
+            self.statusBar.showMessage("🔄 Синхронизиране...", 5000)
+            # We use the background runner if available, or call directly
+            self.sync_manager.perform_sync_iteration()
+            # If not using signals, we can manually call on_sync_finished
+            # But SyncManager usually emits 'sync_finished'
+            
+    def init_tray_icon(self):
+        """Initialize the system tray icon and menu"""
+        self.tray_icon = QSystemTrayIcon(self)
+        
+        # Use existing logo or standard icon
+        icon_path = get_resource_path('vladpos_logo.png')
+        if not os.path.exists(icon_path):
+             icon_path = get_resource_path('logo-d-d.jpg')
+             
+        if os.path.exists(icon_path):
+            self.tray_icon.setIcon(QIcon(icon_path))
+        else:
+            self.tray_icon.setIcon(self.style().standardIcon(Qt.StandardPixmap.SP_ComputerIcon))
+            
+        # Create context menu
+        tray_menu = QMenu()
+        
+        show_action = QAction("📂 Отвори програмата", self)
+        show_action.triggered.connect(self.show_normal)
+        
+        sync_action = QAction("🔄 Синхронизиране със сървъра", self)
+        sync_action.triggered.connect(self.perform_sync)
+        
+        settings_action = QAction("⚙️ Настройки", self)
+        settings_action.triggered.connect(self.open_settings)
+        
+        exit_action = QAction("❌ Затваряне", self)
+        exit_action.triggered.connect(self.quit_application)
+        
+        tray_menu.addAction(show_action)
+        tray_menu.addAction(sync_action)
+        tray_menu.addAction(settings_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(exit_action)
+        
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+        self.tray_icon.show()
+
+    def on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            if self.isVisible():
+                self.hide()
+            else:
+                self.show_normal()
+
+    def show_normal(self):
+        self.show()
+        self.setWindowState(Qt.WindowState.WindowActive)
+        self.activateWindow()
+
+    def quit_application(self):
+        """Properly quit the application by stopping all threads"""
         try:
             if hasattr(self, 'server_thread') and self.server_thread:
                 self.server_thread.stop()
@@ -1503,15 +1612,32 @@ class MainWindow(QMainWindow):
                 self.sync_manager.stop()
         except:
             pass
-            
-        reply = QMessageBox.question(self, 'Изход', 
-            "Сигурни ли сте, че искате да излезете?", QMessageBox.StandardButton.Yes | 
-            QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            
-        if reply == QMessageBox.StandardButton.Yes:
-            event.accept()
-        else:
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        """Handle window close event - hide to tray instead of exit if tray exists"""
+        if hasattr(self, 'tray_icon') and self.tray_icon.isVisible():
+            self.hide()
             event.ignore()
+            self.statusBar.showMessage("Програмата продължава да работи в системната лента.", 5000)
+        else:
+            # Fallback for when tray is not initialized/visible
+            reply = QMessageBox.question(self, 'Изход', 
+                "Сигурни ли сте, че искате да излезете?", QMessageBox.StandardButton.Yes | 
+                QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+                
+            if reply == QMessageBox.StandardButton.Yes:
+                # Stop threads
+                try:
+                    if hasattr(self, 'server_thread') and self.server_thread:
+                        self.server_thread.stop()
+                    if hasattr(self, 'sync_manager') and self.sync_manager:
+                        self.sync_manager.stop()
+                except:
+                    pass
+                event.accept()
+            else:
+                event.ignore()
 
 def main():
     # Create application
