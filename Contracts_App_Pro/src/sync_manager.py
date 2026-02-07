@@ -75,13 +75,17 @@ class SyncManager(QObject):
             self.status_changed.emit("syncing")
             
             self.push_changes()
-            self.pull_changes()
+            new_count = self.pull_changes()
             
             self.last_sync_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # Persist last sync time
             self.save_settings(self.server_url, self.mode)
             
-            self.sync_finished.emit(True, "Sync successful")
+            msg = "Sync successful"
+            if new_count > 0:
+                msg = f"Успешна синхронизация. Получени са {new_count} нови записа."
+                
+            self.sync_finished.emit(True, msg)
             self.status_changed.emit("online")
             
         except requests.exceptions.RequestException:
@@ -213,13 +217,7 @@ class SyncManager(QObject):
         con = get_connection()
         cur = con.cursor()
         
-        # Apply changes locally
-        # CAUTION: Need to handle conflicts or potential ID clashes
-        # Ideally we use contract number/serial as logic keys
-        
-        # For prototype, we just upsert based on business keys or update if ID matches?
-        # Since ID sync is hard without UUIDs, we will rely on business logic keys mostly
-        
+        new_items_count = 0
         for client in data.get("clients", []):
             # Upsert by contract_number - strict check
             cn = client.get('contract_number')
@@ -247,6 +245,7 @@ class SyncManager(QObject):
                 cols = ", ".join(clean_data.keys())
                 placeholders = ", ".join(["?"] * len(clean_data))
                 cur.execute(f"INSERT INTO clients ({cols}) VALUES ({placeholders})", list(clean_data.values()))
+                new_items_count += 1
 
         # For devices - match by serial number
         for device in data.get("devices", []):
@@ -377,3 +376,4 @@ class SyncManager(QObject):
                     
         con.commit()
         con.close()
+        return new_items_count

@@ -34,13 +34,15 @@ except ImportError:
 from database import (
     init_db, get_all_devices, search_devices, delete_device,
     get_client_by_contract, get_devices_by_contract,
-    get_all_products, search_products, delete_product, get_db_stats
+    get_all_products, search_products, delete_product, get_db_stats,
+    get_all_invoices, get_invoice_details, update_invoice_payment, delete_invoice,
+    get_next_invoice_number, add_invoice
 )
 from contract_generator import generate_service_contract, generate_nap_xml
 from dialogs import (
     AddDeviceDialog, EditDeviceDialog, AddToExistingContractDialog,
     ExpiringContractsDialog, SettingsDialog, LoginDialog, RepairProtocolDialog,
-    ProductDialog, DuplicatePassportDialog
+    ProductDialog, DuplicatePassportDialog, InvoiceDialog, ProtocolDialog
 )
 from importer import import_contracts_simple
 from bim_loader import load_certificates_safe
@@ -54,37 +56,6 @@ except ImportError as e:
     print(f"Sync modules not available: {e}")
     ServerThread = None
     SyncManager = None
-
-class SplashScreen(QSplashScreen):
-    def __init__(self):
-        # Create a background pixmap (canvas)
-        canvas_width = 700
-        canvas_height = 500
-        pixmap = QPixmap(canvas_width, canvas_height)
-        pixmap.fill(Qt.GlobalColor.white)
-        
-        super().__init__(pixmap)
-        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
-        
-        # Paths to images safely via utility
-        logo_path = get_resource_path('logo-d-d.jpg')
-        
-        # Title Label
-        self.titleLabel = QLabel("Регистър на\nфискални устройства", self)
-        self.titleLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.titleLabel.setStyleSheet("font-size: 32px; font-weight: bold; color: #2c3e50; margin-top: 20px;")
-        self.titleLabel.setGeometry(0, 30, canvas_width, 100)
-        
-        # Logo Label
-        self.logoLabel = QLabel(self)
-        if os.path.exists(logo_path):
-            original_pixmap = QPixmap(logo_path)
-            scaled_logo = original_pixmap.scaled(350, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-            self.logoLabel.setPixmap(scaled_logo)
-            self.logoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Center the logo in the middle of the remaining space
-            logo_x = (canvas_width - scaled_logo.width()) // 2
-            logo_y = 150 # Starting after title
 
 def set_autorun(enabled: bool):
     """Set the application to start automatically with Windows"""
@@ -103,7 +74,7 @@ def set_autorun(enabled: bool):
     try:
         key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run", 0, winreg.KEY_SET_VALUE)
         if enabled:
-            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{app_path}"')
+            winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, f'"{app_path}" --silent')
         else:
             try:
                 winreg.DeleteValue(key, app_name)
@@ -112,6 +83,148 @@ def set_autorun(enabled: bool):
         winreg.CloseKey(key)
     except Exception as e:
         print(f"Error setting autorun: {e}")
+
+from PyQt6.QtCore import QThread, pyqtSignal
+
+class AutomationThread(QThread):
+    """Background worker for automated tasks like monthly reports"""
+    status_signal = pyqtSignal(str)
+
+    def run(self):
+        import time
+        from datetime import datetime
+        from path_utils import get_app_root
+        from database import get_expiring_contracts
+        from export_word import export_to_word
+        from email_manager import send_email_with_attachment
+        import json
+
+        print("Automation Thread started...")
+        
+        while True:
+            try:
+                # 1. Load settings
+                settings_path = os.path.join(get_app_root(), "data", "settings.json")
+                if not os.path.exists(settings_path):
+                    time.sleep(3600)
+                    continue
+                
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    settings = json.load(f)
+                
+                auto_cfg = settings.get('automation', {})
+                if not auto_cfg.get('auto_reports_enabled'):
+                    time.sleep(3600)
+                    continue
+                
+                # 2. Check timing
+                now = datetime.now()
+                target_day = auto_cfg.get('report_day', 10)
+                last_sent = auto_cfg.get('last_report_month', "") # Format: "YYYY-MM"
+                
+                current_month = now.strftime("%Y-%m")
+                
+                # We send on the target day if not sent this month yet
+                if now.day == target_day and last_sent != current_month and 9 <= now.hour <= 23:
+                    print(f"Time to send monthly report: {current_month}")
+                    
+                    # 3. Generate Report (Expiring contracts for next month)
+                    exp_month = now.month + 1 if now.month < 12 else 1
+                    exp_year = now.year if now.month < 12 else now.year + 1
+                    
+                    data = get_expiring_contracts(exp_month, exp_year)
+                    if data:
+                        headers = ["№ Договор", "Фирма/Клиент", "ЕИК", "Град", "Адрес", "Име Обект", "Модел", "Сериен №", "ИН на ФУ", "Валидност БИМ"]
+                        report_data = []
+                        for row in data:
+                            report_data.append((row[1], row[3], row[4], row[7], row[9], row[14], row[17], row[18], row[19], row[22]))
+
+                        report_dir = os.path.join(get_app_root(), "data", "reports")
+                        os.makedirs(report_dir, exist_ok=True)
+                        report_file = os.path.join(report_dir, f"Expiring_Contracts_{current_month}.docx")
+                        
+                        title = f"Справка за изтичащи договори - {exp_month:02d}.{exp_year}"
+                        if export_to_word(report_data, headers, report_file, title):
+                            # 4. Send Email
+                            smtp_cfg = {
+                                'server': auto_cfg.get('smtp_server'),
+                                'port': auto_cfg.get('smtp_port', 587),
+                                'user': auto_cfg.get('smtp_user'),
+                                'password': auto_cfg.get('smtp_password'),
+                                'use_tls': auto_cfg.get('smtp_tls', True)
+                            }
+                            
+                            recipient = auto_cfg.get('report_recipient')
+                            subject = f"Месечна справка: {title}"
+                            body = f"Здравейте,\n\nВ приложение ще намерите справка за договорите, чиято валидност изтича през {exp_month:02d}.{exp_year}.\n\nПоздрави,\nContracts App Automation"
+                            
+                            if send_email_with_attachment(smtp_cfg, recipient, subject, body, report_file):
+                                print("Monthly report sent successfully!")
+                                settings['automation']['last_report_month'] = current_month
+                                with open(settings_path, 'w', encoding='utf-8') as f:
+                                    json.dump(settings, f, ensure_ascii=False, indent=2)
+                                self.status_signal.emit("Месечният отчет бе изпратен успешно.")
+                            else:
+                                self.status_signal.emit("Грешка при изпращане на имейл отчет.")
+                        else:
+                            print("Failed to generate report.")
+                    else:
+                        print("No expiring contracts found.")
+                        settings['automation']['last_report_month'] = current_month
+                        with open(settings_path, 'w', encoding='utf-8') as f:
+                            json.dump(settings, f, ensure_ascii=False, indent=2)
+                
+                # 5. EXPIRING ALERTS (7, 14, 30 days)
+                current_date_key = now.strftime("%Y-%m-%d")
+                last_alert_date = auto_cfg.get('last_alert_date', "")
+                
+                if last_alert_date != current_date_key and 8 <= now.hour <= 23:
+                    print("Checking for 7/14/30 day expiry alerts...")
+                    from database import get_contracts_expiring_in_days
+                    
+                    alert_intervals = {
+                        7: auto_cfg.get('email_7d_ahead', True),
+                        14: auto_cfg.get('email_14d_ahead', True),
+                        30: auto_cfg.get('email_30d_ahead', True)
+                    }
+                    
+                    smtp_cfg = {
+                        'server': auto_cfg.get('smtp_server'),
+                        'port': auto_cfg.get('smtp_port', 587),
+                        'user': auto_cfg.get('smtp_user'),
+                        'password': auto_cfg.get('smtp_password'),
+                        'use_tls': auto_cfg.get('smtp_tls', True)
+                    }
+                    recipient = auto_cfg.get('report_recipient')
+                    
+                    any_alerts_sent = False
+                    for days, enabled in alert_intervals.items():
+                        if enabled:
+                            exp_clients = get_contracts_expiring_in_days(days)
+                            if exp_clients:
+                                subject = f"⚠️ ВНИМАНИЕ: Договор(и) изтичащи след {days} дни!"
+                                body = f"Следните договори изтичат точно след {days} дни:\n\n"
+                                for c in exp_clients:
+                                    body += f"- {c['company_name']} (Договор № {c['contract_number']})\n"
+                                body += "\nМоля, свържете се с клиентите за подновяване.\n\nПоздрави,\nContracts App Automation"
+                                
+                                from email_manager import send_email_with_attachment
+                                if send_email_with_attachment(smtp_cfg, recipient, subject, body):
+                                    print(f"Sent {days} day alert to {recipient}")
+                                    any_alerts_sent = True
+                                    
+                    # Update last alert date
+                    settings['automation']['last_alert_date'] = current_date_key
+                    with open(settings_path, 'w', encoding='utf-8') as f:
+                        json.dump(settings, f, ensure_ascii=False, indent=2)
+                        
+                    if any_alerts_sent:
+                        self.status_signal.emit("Изпратени са автоматични известия за изтичащи договори.")
+
+            except Exception as e:
+                print(f"Automation Error: {e}")
+            
+            time.sleep(3600)
 
 
 def backup_database():
@@ -231,11 +344,52 @@ class MainWindow(QMainWindow):
         self.setup_product_tab()
         self.tabs.addTab(self.product_tab, "📦 Продукти")
         
-        # Tab 3: Statistics
+        # Tab 3: Invoices (New)
+        self.invoice_tab = QWidget()
+        self.setup_invoice_tab()
+        self.tabs.addTab(self.invoice_tab, "🧾 Фактури")
+
+        # Tab 4: Statistics
         self.stats_tab = QWidget()
         self.setup_stats_tab()
         self.tabs.addTab(self.stats_tab, "📊 Статистика")
         self.tabs.currentChanged.connect(self.on_tab_changed)
+        
+        # Shortcuts
+        self.search_shortcut = QAction(self)
+        self.search_shortcut.setShortcut("Ctrl+F")
+        self.search_shortcut.triggered.connect(self.focus_search)
+        self.addAction(self.search_shortcut)
+        
+        # New Device Shortcut
+        self.new_device_shortcut = QAction(self)
+        self.new_device_shortcut.setShortcut("Ctrl+N")
+        self.new_device_shortcut.triggered.connect(self.add_device)
+        self.addAction(self.new_device_shortcut)
+        
+        # Handover Protocol Shortcut
+        self.proto_shortcut = QAction(self)
+        self.proto_shortcut.setShortcut("Ctrl+P")
+        self.proto_shortcut.triggered.connect(self.open_protocol)
+        self.addAction(self.proto_shortcut)
+        
+        # Audit Log Shortcut
+        self.audit_shortcut = QAction(self)
+        self.audit_shortcut.setShortcut("Ctrl+H") # H for History
+        self.audit_shortcut.triggered.connect(self.show_audit_log)
+        self.addAction(self.audit_shortcut)
+        
+        # Sync Shortcut
+        self.sync_shortcut = QAction(self)
+        self.sync_shortcut.setShortcut("Ctrl+G") # G for Global Sync
+        self.sync_shortcut.triggered.connect(self.perform_sync)
+        self.addAction(self.sync_shortcut)
+        
+        # Settings Shortcut
+        self.settings_shortcut = QAction(self)
+        self.settings_shortcut.setShortcut("Ctrl+S")
+        self.settings_shortcut.triggered.connect(self.show_settings)
+        self.addAction(self.settings_shortcut)
         
         # Status bar
         self.statusBar = QStatusBar()
@@ -255,6 +409,11 @@ class MainWindow(QMainWindow):
         
         # Tray Icon
         self.init_tray_icon()
+        
+        # Automation Thread
+        self.automation_thread = AutomationThread()
+        self.automation_thread.status_signal.connect(lambda msg: self.statusBar.showMessage(msg, 5000))
+        self.automation_thread.start()
 
     def setup_device_tab(self):
         layout = QVBoxLayout()
@@ -332,6 +491,51 @@ class MainWindow(QMainWindow):
         
         layout.addWidget(self.product_table)
 
+    def setup_invoice_tab(self):
+        layout = QVBoxLayout()
+        self.invoice_tab.setLayout(layout)
+        
+        # Tools row
+        tools_layout = QHBoxLayout()
+        
+        self.invoice_search = QLineEdit()
+        self.invoice_search.setPlaceholderText("Търси по номер на фактура или клиент...")
+        # self.invoice_search.textChanged.connect(self.refresh_invoices)
+        tools_layout.addWidget(self.invoice_search)
+        
+        btn_add = QPushButton("🧾 Нова Фактура")
+        btn_add.clicked.connect(self.add_invoice_action)
+        btn_add.setStyleSheet("background-color: #28a745; color: white; font-weight: bold; min-height: 30px;")
+        tools_layout.addWidget(btn_add)
+        
+        btn_refresh = QPushButton("🔄 Обнови")
+        btn_refresh.clicked.connect(self.refresh_invoices)
+        tools_layout.addWidget(btn_refresh)
+        
+        layout.addLayout(tools_layout)
+        
+        # Invoice table
+        self.invoice_table = QTableWidget()
+        self.invoice_table.setColumnCount(8)
+        self.invoice_table.setHorizontalHeaderLabels([
+            "ID", "Номер", "Тип", "Дата", "Клиент", "Сума", "Статус", "Платена"
+        ])
+        self.invoice_table.setColumnHidden(0, True)
+        self.invoice_table.setSortingEnabled(True)
+        self.invoice_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.invoice_table.horizontalHeader().setStretchLastSection(True)
+        
+        # Set column widths
+        widths = [0, 120, 100, 100, 300, 120, 120, 80]
+        for i, w in enumerate(widths):
+            self.invoice_table.setColumnWidth(i, w)
+            
+        self.invoice_table.doubleClicked.connect(self.view_invoice_action)
+        self.invoice_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.invoice_table.customContextMenuRequested.connect(self.show_invoice_context_menu)
+        
+        layout.addWidget(self.invoice_table)
+
     def setup_stats_tab(self):
         layout = QVBoxLayout()
         self.stats_tab.setLayout(layout)
@@ -401,6 +605,106 @@ class MainWindow(QMainWindow):
         card_layout.addWidget(lbl_value)
         
         return card
+
+    def refresh_invoices(self):
+        """Load invoices from DB to table"""
+        invoices = get_all_invoices()
+        
+        self.invoice_table.setSortingEnabled(False)
+        self.invoice_table.setRowCount(0)
+        
+        for inv in invoices:
+            row = self.invoice_table.rowCount()
+            self.invoice_table.insertRow(row)
+            
+            # ID (hidden)
+            self.invoice_table.setItem(row, 0, QTableWidgetItem(str(inv['id'])))
+            
+            # Number
+            self.invoice_table.setItem(row, 1, QTableWidgetItem(inv['number']))
+            
+            # Type
+            doc_type = "Фактура" if inv['type'] == 'INV' else "Проформа"
+            self.invoice_table.setItem(row, 2, QTableWidgetItem(doc_type))
+            
+            # Date
+            self.invoice_table.setItem(row, 3, QTableWidgetItem(format_date_bg(inv['date_issued'])))
+            
+            # Client
+            self.invoice_table.setItem(row, 4, QTableWidgetItem(inv['client_name']))
+            
+            # Amount
+            amount_item = QTableWidgetItem(f"{inv['total_amount']:.2f} {inv['currency']}")
+            amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.invoice_table.setItem(row, 5, amount_item)
+            
+            # Status
+            status_map = {
+                'PENDING': '⏳ Изчакващ',
+                'PAID': '✅ Платена',
+                'OVERDUE': '⚠️ Просрочена',
+                'PARTIAL': '🌗 Частично'
+            }
+            status_text = status_map.get(inv['payment_status'], inv['payment_status'])
+            self.invoice_table.setItem(row, 6, QTableWidgetItem(status_text))
+            
+            # Paid Checkbox (visual only)
+            is_paid = "Да" if inv.get('is_paid') == 1 else "Не"
+            self.invoice_table.setItem(row, 7, QTableWidgetItem(is_paid))
+            
+        self.invoice_table.setSortingEnabled(True)
+
+    def show_invoice_context_menu(self, pos):
+        index = self.invoice_table.indexAt(pos)
+        if not index.isValid(): return
+        
+        row = index.row()
+        invoice_id = int(self.invoice_table.item(row, 0).text())
+        
+        menu = QMenu()
+        view_act = menu.addAction("👁️ Преглед")
+        pay_act = menu.addAction("💰 Маркирай като платена")
+        unpay_act = menu.addAction("🔄 Маркирай като неплатена")
+        menu.addSeparator()
+        del_act = menu.addAction("🗑️ Изтриване")
+        
+        action = menu.exec(self.invoice_table.viewport().mapToGlobal(pos))
+        
+        if action == view_act:
+            # self.view_invoice_action()
+            pass
+        elif action == pay_act:
+            if update_invoice_payment(invoice_id, 'PAID', True):
+                self.refresh_invoices()
+        elif action == unpay_act:
+            if update_invoice_payment(invoice_id, 'PENDING', False):
+                self.refresh_invoices()
+        elif action == del_act:
+            if QMessageBox.question(self, "Потвърждение", "Сигурни ли сте, че искате да изтриете тази фактура?") == QMessageBox.StandardButton.Yes:
+                if delete_invoice(invoice_id):
+                    self.refresh_invoices()
+
+    def view_invoice_action(self):
+        # Selected row
+        selected = self.invoice_table.selectionModel().selectedRows()
+        if not selected: return
+        
+        row = selected[0].row()
+        invoice_id = int(self.invoice_table.item(row, 0).text())
+        
+        # Get full details from DB
+        invoice_details = get_invoice_details(invoice_id)
+        if invoice_details:
+            dialog = InvoiceDialog(self, invoice_data=invoice_details)
+            if dialog.exec():
+                self.refresh_invoices()
+
+    def add_invoice_action(self):
+        dialog = InvoiceDialog(self)
+        if dialog.exec():
+            self.refresh_invoices()
+            if self.current_user:
+                log_action(self.current_user['id'], self.current_user['username'], "CREATE_INVOICE", f"Created document")
 
     def refresh_stats(self):
         try:
@@ -648,6 +952,12 @@ class MainWindow(QMainWindow):
         action_duplicate.triggered.connect(self.generate_duplicate_action)
         menu_docs.addAction(action_duplicate)
         
+        menu_docs.addSeparator()
+        
+        action_handover = QAction("📋 Приемо-предавателен протокол", self)
+        action_handover.triggered.connect(self.open_protocol)
+        menu_docs.addAction(action_handover)
+        
         btn_docs.setMenu(menu_docs)
         self.toolbar.addWidget(btn_docs)
         
@@ -862,7 +1172,7 @@ class MainWindow(QMainWindow):
                     display_value = str(value) if value is not None else ""
                 
                 item = QTableWidgetItem(display_value)
-                item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable) # Make items non-editable by default
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable) # Make items non-editable by default
                 
                 # Make ID column data accessible but hidden
                 if not expiring_mode and col == 0:
@@ -1132,10 +1442,6 @@ class MainWindow(QMainWindow):
         from database import get_device_full
         full_data = get_device_full(device_id)
         
-        if not full_data:
-            QMessageBox.critical(self, "Грешка", "Неуспешно намиране на данните за устройството.")
-            return
-
         from contract_generator import clean_numeric
         client_eik = clean_numeric(full_data.get('eik', ''))
         fdrid = clean_numeric(full_data.get('fdrid', ''))
@@ -1156,6 +1462,11 @@ class MainWindow(QMainWindow):
             os.startfile(output_dir)
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при генериране на XML:\n{e}")
+
+    def open_protocol(self):
+        """Open Handover Protocol dialog"""
+        dialog = ProtocolDialog(self)
+        dialog.exec()
 
     def generate_deregistration_action(self):
         """Open dialog and generate deregistration protocol"""
@@ -1319,8 +1630,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Грешка", "Само администраторът има достъп до одита!")
             return
             
-        from dialogs import AuditLogDialog
-        dialog = AuditLogDialog(self)
+        from dialogs import AuditLogViewerDialog
+        dialog = AuditLogViewerDialog(self)
         dialog.exec()
 
 
@@ -1528,13 +1839,20 @@ class MainWindow(QMainWindow):
              self.statusBar.showMessage("🟢 СЪРВЪРЪТ РАБОТИ", 5000)
 
     def on_sync_finished(self, success, message):
-        if success:
-            timestamp = datetime.now().strftime("%H:%M:%S")
-            self.statusBar.showMessage(f"✅ Синхронизирано в {timestamp}")
+        self.status_label.setText(f"Последна синхронизация: {datetime.now().strftime('%H:%M:%S')}")
+        if not success:
+            self.status_icon.setPixmap(self.offline_pixmap)
+            # self.statusBar.showMessage(f"Синхронизацията не бе успешна: {message}", 5000)
+            self.statusBar.showMessage(f"⚠️ Грешка при синхронизация: {message}", 10000)
+        else:
+            self.status_icon.setPixmap(self.online_pixmap)
+            self.statusBar.showMessage(message, 5000)
+            
+            # Phase 11: Show pop-up if new items were received
+            if "Получени са" in message:
+                QMessageBox.information(self, "Нови данни", message)
             self.refresh_table()
             self.refresh_products()
-        else:
-            self.statusBar.showMessage(f"⚠️ Грешка при синхронизация: {message}", 10000)
 
     def open_settings(self):
         """Open settings dialog"""
@@ -1551,6 +1869,19 @@ class MainWindow(QMainWindow):
             self.sync_manager.perform_sync_iteration()
             # If not using signals, we can manually call on_sync_finished
             # But SyncManager usually emits 'sync_finished'
+
+    def focus_search(self):
+        """Focus the search box in the current tab"""
+        idx = self.tabs.currentIndex()
+        if idx == 0: # Devices
+            self.f_company.setFocus()
+            self.f_company.selectAll()
+        elif idx == 1: # Products
+            self.product_search.setFocus()
+            self.product_search.selectAll()
+        elif idx == 2: # Invoices
+            self.invoice_search.setFocus()
+            self.invoice_search.selectAll()
             
     def init_tray_icon(self):
         """Initialize the system tray icon and menu"""

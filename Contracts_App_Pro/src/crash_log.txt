@@ -54,3 +54,76 @@ Traceback (most recent call last):
     toolbar.addWidget(btn_devices)
     ^^^^^^^
 NameError: name 'toolbar' is not defined. Did you mean: 'self.toolbar'?
+
+==================================================
+Timestamp: 2026-02-07 18:59:16
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 620, in add_invoice_action
+    dialog = InvoiceDialog(self)
+             ^^^^^^^^^^^^^
+NameError: name 'InvoiceDialog' is not defined
+
+==================================================
+Timestamp: 2026-02-07 19:00:20
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 620, in add_invoice_action
+    dialog = InvoiceDialog(self)
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 2813, in __init__
+    self.setup_ui()
+    ~~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 2857, in setup_ui
+    header_layout = QGridLayout()
+                    ^^^^^^^^^^^
+NameError: name 'QGridLayout' is not defined. Did you mean: 'QFormLayout'?
+
+==================================================
+Timestamp: 2026-02-07 19:35:17
+TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object
+
+==================================================
+Timestamp: 2026-02-07 20:03:21
+TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object
+
+==================================================
+Timestamp: 2026-02-07 20:55:30
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1988, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1978, in main
+    window = MainWindow()
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 317, in __init__
+    self.refresh_table()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1032, in refresh_table
+    self.load_table(data)
+    ~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1086, in load_table
+    item.setFlags(item.flags() ^ Qt.ItemFlag.ItemIsEditable) # Make items non-editable by default
+    ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: setFlags(self, aflags: Qt.ItemFlag): argument 1 has unexpected type 'ItemFlag'
+
+==================================================
+Timestamp: 2026-02-07 22:02:46
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 1627, in show_audit_log
+    dialog = AuditLogViewerDialog(self)
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\dialogs.py", line 3654, in __init__
+    self.con = get_connection()
+               ^^^^^^^^^^^^^^
+NameError: name 'get_connection' is not defined
+
+==================================================
+Timestamp: 2026-02-07 22:08:24
+TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object
+
+==================================================
+Timestamp: 2026-02-07 22:22:26
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 2118, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\Contracts_App_Pro\src\main.py", line 2084, in main
+    settings_path = os.path.join(get_app_root(), "data", "settings.json")
+                                 ^^^^^^^^^^^^
+NameError: name 'get_app_root' is not defined

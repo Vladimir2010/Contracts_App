@@ -15,5 +15,27 @@
   "tech_egn": "7910089140",
   "tech_name1": "Росен",
   "tech_name2": "Георгиев",
-  "tech_name3": "Иванов"
+  "tech_name3": "Иванов",
+  "server_url": "",
+  "mode": "server",
+  "automation": {
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "smtp_user": "kasovi.aparati.profinans@gmail.com",
+    "smtp_password": "alqhfgxtyxnspfke",
+    "smtp_tls": true,
+    "report_recipient": "vladi.work@abv.bg",
+    "report_day": 10,
+    "auto_reports_enabled": true,
+    "last_alert_date": "2026-02-07"
+  },
+  "autorun": true,
+  "backup": {
+    "google_drive_enabled": false,
+    "dropbox_enabled": true,
+    "dropbox_token": "sl.u.AGRgKoRy7ezRUZ8s6RCCMS8Ewo4Tl5FoAxoilhrphyPQiuhW-87sqATnlis2NV60K4VNjzcWwjRuVi37X4riNgT0y2zWsjxmgHjlOWpkhfz60xgIPiDl7PZeGGvv25Ks7fwYkgBGGRCwpA89DiL7llzoD1DBameIpsUyavwE56k44bgGvcjk4ZK4KDD4zSXPjL3KuygGhDVRTV-wo_ubrhug3_KiK6FKl8YcXud6aqZHSY6W4_g2BEIso0ZXdiNO259I3W1H2cLC_Ue_TF4gqiRKbpRVjIUCtpElR7GUtMwEWrpI1_UbARlITItJRp_GqaeM8yPV6m7gFnX-g6qAX275kRCNCKgmN2qH9ABwKuFf5qsB5tQ33nh_fx3cj5BZeWSoDtZktLrWMNoYo95r1tYtAIAYH0IBJkZvE8AW4rr1LovhiqXd1tMZBd3X7D6TK5zJOEGmGl38hncPExoGSIaXfL4k0oF7hj6wuw6_QuxuDGeI03XcFCEdyLGuiob-S8HQLH43Lk5t3jOk2KhM7VTz07uz5v4QGbXNRjN9VyxVhjQ4rZ3-sDUkys_xOm5XS7CPYP4mfZj1B7YVVK06kP1JfMH92PQgWMh9gk7TImMuh_i7YOavP_bA6-D6NG5QW-1KOsIJX0jyFP-qB_JYJ_zzmyhn5_XUYb1EQ_oIdCy1bzUAwUNgc5CGIEyHoqb4THwv4Che57Jsp--HCeXiLVQCYbmC6vj_fpzb1E3WlVEGWsMxLPmxZVbjd6XDz_miHvlCkq85PsrOJwMHjUldcmLHMZkkgg0zMHx1N3hUUJfpm8YwhPOCkuqx6QcxOLTKP8ykvV35c5gyA5yZDPKswUHj3wByAtzmNR-rf3UC6M8KmCesbTHjOdQFQcetV3-cefmqbvNYbPKHf-GUV4y_vDoNQNfqpGjFQ6VlBCDZVBD0fuNEGxwy96k9F0EF-2HaRu2fYza1QfWW71sCKodnl42rOHT86pGCAII8I_2mBXzaLxAo11XLpfBvydMDDwwCuHPXL5ETQ7YbSj3PkEU08UPpiodZJek2XpAcymlt__sno_5uN8RRr3DWSY8EL8VNR1m3MVKvt2t2uGGmMFQSQ71YRVuFic0NsMZXOxsnjeZUlD1_trt-v9FnM1OA5chI_EwEZxGvwjGdkorcojdryurNG2biZk9Aogjv5-gD49nLH8jFtcGSqxVYG6JrX28ubHmig0u-f9b04w73ru9ZRQSpdHLcWxtW8SlTphPkSrgp_iYdK6qpmB2K56YB16dzkK_j0oamCaTv0EDh6R1ok1XS",
+    "google_folder_id": "",
+    "interval": "При затваряне"
+  },
+  "theme": "Тъмна"
 }

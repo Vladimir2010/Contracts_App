@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QMessageBox, QDateEdit, QCheckBox, QLabel, QTabWidget, QWidget,
     QFileDialog, QSpinBox, QDoubleSpinBox, QCompleter, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QTextEdit, QGroupBox
+    QHeaderView, QAbstractItemView, QTextEdit, QGroupBox, QGridLayout
 )
 from PyQt6.QtCore import QDate, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -11,16 +11,34 @@ from database import (
     get_all_certificates, add_client, add_device, get_client_by_contract,
     get_all_contract_numbers, update_device, get_device_full,
     get_next_contract_number, get_devices_for_nra_report, add_repair_record,
-    add_product, update_product, delete_product, get_all_products
+    add_product, update_product, delete_product, get_all_products,
+    get_next_invoice_number, add_invoice, get_all_invoices, update_invoice,
+    update_client, delete_client, search_clients, get_connection,
+    get_all_counterparties, add_counterparty, update_counterparty, add_handover_protocol,
+    get_setting
 )
+from database import get_all_clients # Added separate to avoid messing up multiline
+from email_manager import send_email_with_attachment
 from export_excel import export_to_excel
 from export_word import export_to_word
-from export_pdf import export_to_pdf
+from export_pdf import export_to_pdf, generate_invoice_pdf
+from export_protocol import generate_handover_protocol
 from date_utils import format_date_bg, qdate_to_db, db_to_qdate
 from datetime import datetime
 import os
 import json
 import re
+
+def get_user_auth(obj):
+    """Helper to find current user in parent chain"""
+    from PyQt6.QtWidgets import QWidget
+    parent = obj.parent()
+    while parent:
+        if hasattr(parent, 'user') and parent.user:
+            return parent.user.get('id'), parent.user.get('username', 'SYSTEM')
+        if not isinstance(parent, QWidget): break
+        parent = parent.parent()
+    return None, "SYSTEM"
 
 
 class AddDeviceDialog(QDialog):
@@ -999,7 +1017,8 @@ class EditDeviceDialog(QDialog):
                 'maintenance_price': self.maintenance_price.value()
             }
             
-            if update_device(self.device_id, client_data, device_data):
+            user_id, username = get_user_auth(self)
+            if update_device(self.device_id, client_data, device_data, user_id=user_id, username=username):
                 QMessageBox.information(self, "Успех", "Промените са запазени успешно!")
                 self.accept()
             else:
@@ -1630,6 +1649,16 @@ class SettingsDialog(QDialog):
         self.tab_network = QWidget()
         self.init_network_tab()
         self.tabs.addTab(self.tab_network, "Мрежа")
+
+        # Tab 7: Automation & Email (New)
+        self.tab_auto = QWidget()
+        self.init_automation_tab()
+        self.tabs.addTab(self.tab_auto, "⚙️ Автоматизация")
+        
+        # Tab 8: Cloud Backup (New)
+        self.tab_cloud = QWidget()
+        self.init_cloud_backup_tab()
+        self.tabs.addTab(self.tab_cloud, "☁️ Облачен Архив")
         
         layout.addWidget(self.tabs)
         
@@ -1747,6 +1776,38 @@ class SettingsDialog(QDialog):
         layout.addRow("", self.c_autorun)
         
         self.tab_config.setLayout(layout)
+
+    def init_cloud_backup_tab(self):
+        layout = QFormLayout()
+        
+        self.cb_gdrive = QCheckBox("Активирай Google Drive архив")
+        self.cb_dropbox = QCheckBox("Активирай Dropbox архив")
+        self.cb_dropbox_token = QLineEdit()
+        self.cb_dropbox_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cb_dropbox_token.setPlaceholderText("Въведете Dropbox Access Token тук...")
+        
+        self.cb_folder_id = QLineEdit()
+        self.cb_folder_id.setPlaceholderText("ID на папка в Google Drive...")
+        
+        self.cb_interval = QComboBox()
+        self.cb_interval.addItems(["При затваряне", "Всеки ден", "Всяка седмица"])
+        
+        layout.addRow("Google Drive:", self.cb_gdrive)
+        layout.addRow("Google Folder ID:", self.cb_folder_id)
+        layout.addRow("Dropbox:", self.cb_dropbox)
+        layout.addRow("Dropbox Token:", self.cb_dropbox_token)
+        layout.addRow("Интервал:", self.cb_interval)
+        
+        btn_manual_backup = QPushButton("☁️ Извърши архив сега")
+        btn_manual_backup.clicked.connect(self.trigger_manual_backup)
+        layout.addRow("", btn_manual_backup)
+        
+        self.tab_cloud.setLayout(layout)
+
+    def trigger_manual_backup(self):
+        from backup_manager import run_cloud_backup
+        run_cloud_backup()
+        QMessageBox.information(self, "Облачен архив", "Архивирането беше стартирано успешно!")
 
     def init_users_tab(self):
         layout = QVBoxLayout()
@@ -1918,7 +1979,29 @@ class SettingsDialog(QDialog):
                     local_data = json.load(f)
                     self.server_ip.setText(local_data.get('server_url', ''))
                     self.c_autorun.setChecked(local_data.get('autorun', False))
-                    # Mode is handled by radio buttons in init_network_tab
+                    
+                    # Automation settings
+                    auto_data = local_data.get('automation', {})
+                    self.smtp_server.setText(auto_data.get('smtp_server', ''))
+                    self.smtp_port.setValue(auto_data.get('smtp_port', 587))
+                    self.smtp_user.setText(auto_data.get('smtp_user', ''))
+                    self.smtp_password.setText(auto_data.get('smtp_password', ''))
+                    self.smtp_tls.setChecked(auto_data.get('smtp_tls', True))
+                    self.report_recipient.setText(auto_data.get('report_recipient', ''))
+                    self.report_day.setValue(auto_data.get('report_day', 10))
+                    self.auto_reports_enabled.setChecked(auto_data.get('auto_reports_enabled', False))
+                    
+                    self.email_7d = auto_data.get('email_7d_ahead', True)
+                    self.email_14d = auto_data.get('email_14d_ahead', True)
+                    self.email_30d = auto_data.get('email_30d_ahead', True)
+                    
+                    # Load Cloud Settings
+                    cloud_data = local_data.get('backup', {})
+                    self.cb_gdrive.setChecked(cloud_data.get('google_drive_enabled', False))
+                    self.cb_dropbox.setChecked(cloud_data.get('dropbox_enabled', False))
+                    self.cb_dropbox_token.setText(cloud_data.get('dropbox_token', ''))
+                    self.cb_folder_id.setText(cloud_data.get('google_folder_id', ''))
+                    self.cb_interval.setCurrentText(cloud_data.get('interval', 'При затваряне'))
             except Exception as e:
                 print(f"Error loading local settings: {e}")
 
@@ -1965,6 +2048,40 @@ class SettingsDialog(QDialog):
             local_data['server_url'] = url
             local_data['mode'] = mode
             
+            # 3. Save Automation Settings
+            auto_data = local_data.get('automation', {})
+            auto_data['smtp_server'] = self.smtp_server.text()
+            auto_data['smtp_port'] = self.smtp_port.value()
+            auto_data['smtp_user'] = self.smtp_user.text()
+            auto_data['smtp_password'] = self.smtp_password.text()
+            auto_data['smtp_tls'] = self.smtp_tls.isChecked()
+            auto_data['report_recipient'] = self.report_recipient.text()
+            auto_data['report_day'] = self.report_day.value()
+            auto_data['auto_reports_enabled'] = self.auto_reports_enabled.isChecked()
+            
+            # Save Cloud Backup Settings
+            cloud_data = local_data.get('backup', {})
+            cloud_data['google_drive_enabled'] = self.cb_gdrive.isChecked()
+            cloud_data['dropbox_enabled'] = self.cb_dropbox.isChecked()
+            cloud_data['dropbox_token'] = self.cb_dropbox_token.text().strip()
+            cloud_data['google_folder_id'] = self.cb_folder_id.text().strip()
+            cloud_data['interval'] = self.cb_interval.currentText()
+            
+            local_data['automation'] = auto_data
+            local_data['backup'] = cloud_data
+            local_data['autorun'] = autorun # Ensure autorun is saved
+            auto_data = {
+                'smtp_server': self.smtp_server.text().strip(),
+                'smtp_port': self.smtp_port.value(),
+                'smtp_user': self.smtp_user.text().strip(),
+                'smtp_password': self.smtp_password.text().strip(),
+                'smtp_tls': self.smtp_tls.isChecked(),
+                'report_recipient': self.report_recipient.text().strip(),
+                'report_day': self.report_day.value(),
+                'auto_reports_enabled': self.auto_reports_enabled.isChecked()
+            }
+            local_data['automation'] = auto_data
+            
             # If autorun changed, update registry
             if local_data.get('autorun') != autorun:
                 from main import set_autorun
@@ -1984,6 +2101,38 @@ class SettingsDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Грешка", f"Грешка при запис:\n{e}")
+
+    def send_test_email(self):
+        """Send a test email to verify SMTP configuration"""
+        smtp_cfg = {
+            'server': self.smtp_server.text().strip(),
+            'port': self.smtp_port.value(),
+            'user': self.smtp_user.text().strip(),
+            'password': self.smtp_password.text().strip(),
+            'use_tls': self.smtp_tls.isChecked()
+        }
+        recipient = self.report_recipient.text().strip()
+        
+        if not smtp_cfg['server'] or not smtp_cfg['user'] or not recipient:
+            QMessageBox.warning(self, "Внимание", "Моля попълнете SMTP сървър, потребител и получател!")
+            return
+            
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        
+        try:
+            subject = "Тестово съобщение: Contracts App"
+            body = "Здравейте,\n\nТова е служебно съобщение за проверка на SMTP настройките в приложението за договори.\nКонфигурацията работи успешно!"
+            
+            if send_email_with_attachment(smtp_cfg, recipient, subject, body):
+                QMessageBox.information(self, "Успех", "Тестовият имейл бе изпратен успешно!")
+            else:
+                QMessageBox.critical(self, "Грешка", "Неуспешно изпращане. Проверете сървъра, порта и паролата (App Password).")
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Възникна системна грешка: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def init_db_admin_tab(self):
         """Database Administration tab for restore and reset"""
@@ -2161,8 +2310,69 @@ class SettingsDialog(QDialog):
         layout.addWidget(self.sync_mode_group)
         layout.addWidget(self.server_config_group)
         layout.addStretch()
-        
         self.tab_network.setLayout(layout)
+
+    def init_automation_tab(self):
+        """Initialize Automation & Email settings tab"""
+        layout = QVBoxLayout()
+        
+        # Email SMTP Group
+        email_group = QGroupBox("SMTP Конфигурация (за изпращане на справки)")
+        email_form = QFormLayout()
+        
+        self.smtp_server = QLineEdit()
+        self.smtp_server.setPlaceholderText("напр. smtp.gmail.com")
+        
+        self.smtp_port = QSpinBox()
+        self.smtp_port.setRange(1, 65535)
+        self.smtp_port.setValue(587)
+        
+        self.smtp_user = QLineEdit()
+        self.smtp_user.setPlaceholderText("vladpos@gmail.com")
+        
+        self.smtp_password = QLineEdit()
+        self.smtp_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.smtp_password.setPlaceholderText("App Password")
+        
+        self.smtp_tls = QCheckBox("Използвай TLS (STARTTLS)")
+        self.smtp_tls.setChecked(True)
+        
+        email_form.addRow("SMTP Сървър:", self.smtp_server)
+        email_form.addRow("Порт:", self.smtp_port)
+        email_form.addRow("Потребител (Email):", self.smtp_user)
+        email_form.addRow("Парола / App Pass:", self.smtp_password)
+        email_form.addRow("", self.smtp_tls)
+        
+        email_group.setLayout(email_form)
+        layout.addWidget(email_group)
+        
+        # Reporting Group
+        report_group = QGroupBox("Месечни Справки")
+        report_form = QFormLayout()
+        
+        self.report_recipient = QLineEdit()
+        self.report_recipient.setPlaceholderText("имейл на сервиза...")
+        
+        self.report_day = QSpinBox()
+        self.report_day.setRange(1, 28)
+        self.report_day.setValue(10)
+        self.report_day.setSuffix(" -то число")
+        
+        self.auto_reports_enabled = QCheckBox("Активирай автоматично изпращане")
+        
+        btn_test_email = QPushButton("📧 Тестово изпращане")
+        btn_test_email.clicked.connect(self.send_test_email)
+        
+        report_form.addRow("Получател на справката:", self.report_recipient)
+        report_form.addRow("Ден за изпращане:", self.report_day)
+        report_form.addRow("", self.auto_reports_enabled)
+        report_form.addRow("", btn_test_email)
+        
+        report_group.setLayout(report_form)
+        layout.addWidget(report_group)
+        
+        layout.addStretch()
+        self.tab_auto.setLayout(layout)
 
     def on_mode_toggled(self):
         if self.sender() == self.radio_client and self.radio_client.isChecked():
@@ -2650,8 +2860,9 @@ class ProductDialog(QDialog):
         }
         
         try:
+            user_id, username = get_user_auth(self)
             if self.is_edit:
-                if update_product(self.product_data['id'], data):
+                if update_product(self.product_data['id'], data, user_id=user_id, username=username):
                     self.accept()
                 else:
                     QMessageBox.warning(self, "Грешка", "Не бе извършена промяна.")
@@ -2713,3 +2924,1167 @@ class DuplicatePassportDialog(QDialog):
         self.accept()
 
 
+class ClientEditorDialog(QDialog):
+    """Dialog for adding or editing a client/counterparty"""
+    def __init__(self, client_data=None, parent=None):
+        super().__init__(parent)
+        self.client_data = client_data
+        self.is_edit = client_data is not None
+        self.setWindowTitle("Редактиране на клиент" if self.is_edit else "Добавяне на нов клиент")
+        self.setMinimumWidth(500)
+        
+        self.init_ui()
+        if self.is_edit:
+            self.load_data()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        
+        self.contract_number = QLineEdit()
+        self.status = QComboBox()
+        self.status.addItems(["активен", "прекратен", "бракувана"])
+        self.status.setEditable(True)
+        
+        self.company_name = QLineEdit()
+        self.company_name.setPlaceholderText("Име на фирмата...")
+        
+        self.city = QLineEdit()
+        self.postal_code = QLineEdit()
+        self.address = QLineEdit()
+        self.eik = QLineEdit()
+        
+        self.vat_registered = QCheckBox("Регистриран по ЗДДС")
+        
+        self.mol = QLineEdit()
+        self.phone1 = QLineEdit()
+        self.phone2 = QLineEdit()
+        
+        self.contract_start = QDateEdit()
+        self.contract_start.setCalendarPopup(True)
+        self.contract_expiry = QDateEdit()
+        self.contract_expiry.setCalendarPopup(True)
+        
+        form.addRow("Фирма/Клиент *:", self.company_name)
+        
+        # EIK + Check Button
+        eik_layout = QHBoxLayout()
+        eik_layout.addWidget(self.eik)
+        self.btn_check_vat = QPushButton("🔍")
+        self.btn_check_vat.setFixedWidth(40)
+        self.btn_check_vat.setToolTip("Провери по ЕИК в НАП/Търговски регистър")
+        self.btn_check_vat.clicked.connect(self.check_vat_status)
+        eik_layout.addWidget(self.btn_check_vat)
+        
+        form.addRow("ЕИК *:", eik_layout)
+        form.addRow("", self.vat_registered)
+        form.addRow("МОЛ:", self.mol)
+        form.addRow("Град:", self.city)
+        form.addRow("Адрес:", self.address)
+        form.addRow("Пощ. код:", self.postal_code)
+        form.addRow("Тел. 1:", self.phone1)
+        form.addRow("Тел. 2:", self.phone2)
+        form.addRow("№ Договор:", self.contract_number)
+        form.addRow("Статус:", self.status)
+        form.addRow("Договор от:", self.contract_start)
+        form.addRow("Изтича на:", self.contract_expiry)
+        
+        layout.addLayout(form)
+        
+        btns = QHBoxLayout()
+        btn_save = QPushButton("💾 Запази")
+        btn_save.clicked.connect(self.save_client)
+        btn_save.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 5px;")
+        
+        btn_cancel = QPushButton("Отказ")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btns.addStretch()
+        btns.addWidget(btn_save)
+        btns.addWidget(btn_cancel)
+        layout.addLayout(btns)
+
+    def load_data(self):
+        d = self.client_data
+        self.company_name.setText(d.get('company_name', ''))
+        self.eik.setText(d.get('eik', ''))
+        self.vat_registered.setChecked(bool(d.get('vat_registered')))
+        self.mol.setText(d.get('mol', ''))
+        self.city.setText(d.get('city', ''))
+        self.address.setText(d.get('address', ''))
+        self.postal_code.setText(d.get('postal_code', ''))
+        self.phone1.setText(d.get('phone1', ''))
+        self.phone2.setText(d.get('phone2', ''))
+        self.contract_number.setText(d.get('contract_number', ''))
+        self.status.setCurrentText(d.get('status', 'активен'))
+        
+        from date_utils import db_to_qdate
+        self.contract_start.setDate(db_to_qdate(d.get('contract_start')))
+        self.contract_expiry.setDate(db_to_qdate(d.get('contract_expiry')))
+
+    def check_vat_status(self):
+        """Check VAT registration status online and fill data"""
+        eik = self.eik.text().strip()
+        if not eik:
+            QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК първо.")
+            return
+
+        result = check_vat(eik)
+        
+        if result is None:
+            QMessageBox.warning(self, "Няма връзка", "Няма информация или връзка с регистъра.")
+        else:
+            if result.get("name"):
+                self.company_name.setText(result.get("name", ""))
+                self.city.setText(result.get("city", ""))
+                self.address.setText(result.get("address", ""))
+                self.postal_code.setText(result.get("postal_code", ""))
+                self.mol.setText(result.get("mol", ""))
+                
+                if result.get("valid"):
+                    self.vat_registered.setChecked(True)
+                    status_text = "ДА"
+                else:
+                    self.vat_registered.setChecked(False)
+                    status_text = "НЕ"
+                
+                QMessageBox.information(self, "Успех", f"Открита фирма:\n{result.get('name')}\nЗДДС: {status_text}")
+            else:
+                QMessageBox.information(self, "Резултат", "Не бе открита информация за този ЕИК.")
+
+    def save_client(self):
+        data = {
+            'company_name': self.company_name.text().strip(),
+            'eik': self.eik.text().strip(),
+            'vat_registered': self.vat_registered.isChecked(),
+            'mol': self.mol.text().strip(),
+            'city': self.city.text().strip(),
+            'address': self.address.text().strip(),
+            'postal_code': self.postal_code.text().strip(),
+            'phone1': self.phone1.text().strip(),
+            'phone2': self.phone2.text().strip(),
+            'contract_number': self.contract_number.text().strip(),
+            'status': self.status.currentText(),
+            'contract_start': self.contract_start.date().toString("yyyy-MM-dd"),
+            'contract_expiry': self.contract_expiry.date().toString("yyyy-MM-dd")
+        }
+        
+        if not data['company_name'] or not data['eik']:
+            QMessageBox.warning(self, "Грешка", "Попълнете Име на фирма и ЕИК!")
+            return
+            
+        try:
+            user_id, username = get_user_auth(self)
+            if self.is_edit:
+                if update_client(self.client_data['id'], data, user_id=user_id, username=username):
+                    self.accept()
+                else:
+                    QMessageBox.critical(self, "Грешка", "Неуспешно обновяване в базата.")
+            else:
+                new_id = add_client(data)
+                if new_id > 0:
+                    self.accept()
+                else:
+                    QMessageBox.critical(self, "Грешка", "Неуспешно добавяне в базата.")
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Системна грешка: {e}")
+
+
+class ClientManagerDialog(QDialog):
+    """Dialog for managing counterparts (add/edit/delete/search/select)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Управление на контрагенти")
+        self.setMinimumSize(1000, 600)
+        self.selected_client = None
+        
+        self.init_ui()
+        self.load_data()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Search area
+        search_layout = QHBoxLayout()
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Търсене по име на фирма, ЕИК или номер на договор...")
+        self.search_input.textChanged.connect(self.load_data)
+        search_layout.addWidget(QLabel("🔍 Търсене:"))
+        search_layout.addWidget(self.search_input)
+        
+        btn_add = QPushButton("➕ Добави нов")
+        btn_add.clicked.connect(self.add_client_action)
+        btn_add.setStyleSheet("background-color: #27ae60; color: white;")
+        search_layout.addWidget(btn_add)
+        
+        layout.addLayout(search_layout)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels([
+            "ID", "Фирма/Клиент", "ЕИК", "Град", "Тел.", "Договор №"
+        ])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.doubleClicked.connect(self.select_client)
+        layout.addWidget(self.table)
+        
+        # Action buttons
+        btns_layout = QHBoxLayout()
+        
+        btn_edit = QPushButton("✏️ Редактирай")
+        btn_edit.clicked.connect(self.edit_client_action)
+        
+        btn_delete = QPushButton("🗑️ Изтрий")
+        btn_delete.clicked.connect(self.delete_client_action)
+        btn_delete.setStyleSheet("color: red;")
+        
+        btn_select = QPushButton("✅ Избери")
+        btn_select.clicked.connect(self.select_client)
+        btn_select.setStyleSheet("background-color: #2980b9; color: white; font-weight: bold; min-width: 100px;")
+        
+        btn_close = QPushButton("Затвори")
+        btn_close.clicked.connect(self.reject)
+        
+        btns_layout.addWidget(btn_edit)
+        btns_layout.addWidget(btn_delete)
+        btns_layout.addStretch()
+        btns_layout.addWidget(btn_select)
+        btns_layout.addWidget(btn_close)
+        
+        layout.addLayout(btns_layout)
+
+    def load_data(self):
+        query = self.search_input.text().strip()
+        if query:
+            clients = search_clients(query)
+        else:
+            clients = get_all_clients()
+            
+        self.table.setRowCount(0)
+        self.clients_list = clients # Keep reference
+        
+        for row_idx, c in enumerate(clients):
+            self.table.insertRow(row_idx)
+            self.table.setItem(row_idx, 0, QTableWidgetItem(str(c['id'])))
+            self.table.setItem(row_idx, 1, QTableWidgetItem(c.get('company_name', '')))
+            self.table.setItem(row_idx, 2, QTableWidgetItem(c.get('eik', '')))
+            self.table.setItem(row_idx, 3, QTableWidgetItem(c.get('city', '')))
+            self.table.setItem(row_idx, 4, QTableWidgetItem(c.get('phone1', '')))
+            self.table.setItem(row_idx, 5, QTableWidgetItem(c.get('contract_number', '')))
+
+    def add_client_action(self):
+        dlg = ClientEditorDialog(parent=self)
+        if dlg.exec():
+            self.load_data()
+
+    def edit_client_action(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Внимание", "Изберете клиент за редакция!")
+            return
+            
+        client_data = self.clients_list[row]
+        dlg = ClientEditorDialog(client_data=client_data, parent=self)
+        if dlg.exec():
+            self.load_data()
+
+    def delete_client_action(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "Внимание", "Изберете клиент за изтриване!")
+            return
+            
+        client_name = self.table.item(row, 1).text()
+        cid = int(self.table.item(row, 0).text())
+        
+        confirm = QMessageBox.question(self, "Потвърждение", 
+                                     f"Сигурни ли сте, че искате да изтриете клиента '{client_name}'?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        
+        if confirm == QMessageBox.StandardButton.Yes:
+            if delete_client(cid):
+                self.load_data()
+            else:
+                QMessageBox.critical(self, "Грешка", "Неуспешно изтриване.")
+
+    def select_client(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            self.selected_client = self.clients_list[row]
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Внимание", "Моля изберете клиент!")
+
+
+class InvoiceDialog(QDialog):
+    """Professional dialog for issuing invoices and proformas"""
+    def __init__(self, parent=None, invoice_data=None):
+        super().__init__(parent)
+        self.setWindowTitle("Издаване на документ (Фактура / Проформа)")
+        self.setMinimumSize(950, 750)
+        self.invoice_data = invoice_data
+        self.items = []
+        
+        self.setup_ui()
+        if invoice_data:
+            self.load_invoice_data()
+        else:
+            self.inv_number.setText(get_next_invoice_number())
+
+    FIXED_EXCHANGE_RATE = 1.95583
+
+    def load_invoice_data(self):
+        inv = self.invoice_data
+        if not inv: return
+        
+        # Header
+        index = self.inv_type.findText("Фактура" if inv['type'] == 'INV' else "Проформа")
+        self.inv_type.setCurrentIndex(index)
+        self.inv_number.setText(inv['number'])
+        self.date_issued.setDate(db_to_qdate(inv['date_issued']))
+        self.date_due.setDate(db_to_qdate(inv['date_due']))
+        
+        # Client
+        self.client_name.setText(inv['client_name'])
+        self.client_eik.setText(inv['client_eik'])
+        self.client_vat.setText(inv['client_vat'] or "")
+        self.client_address.setText(inv['client_address'])
+        self.client_mol.setText(inv['client_mol'] or "")
+        
+        # Items
+        self.table.setRowCount(0)
+        for item in inv.get('items', []):
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.setup_row_widgets(row, item['description'], item['quantity'], item['unit_price'])
+            
+        # Stats
+        self.vat_rate.setValue(int(inv['vat_rate']))
+        self.pay_method.setCurrentText(inv['payment_method'])
+        self.pay_status.setCurrentText(inv['payment_status'])
+        self.notes.setPlainText(inv['notes'] or "")
+        
+        self.calculate_totals()
+            
+    def setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        
+        # 1. Header Information (Number, Dates, Type)
+        header_group = QGroupBox("Информация за документа")
+        header_layout = QGridLayout()
+        
+        self.inv_type = QComboBox()
+        self.inv_type.addItems(["Фактура", "Проформа"])
+        self.inv_type.currentIndexChanged.connect(self.update_invoice_number)
+        
+        self.inv_number = QLineEdit()
+        self.inv_number.setPlaceholderText("Автоматично...")
+        
+        self.date_issued = QDateEdit()
+        self.date_issued.setCalendarPopup(True)
+        self.date_issued.setDate(QDate.currentDate())
+        self.date_issued.setDisplayFormat("dd.MM.yyyy")
+        
+        self.date_due = QDateEdit()
+        self.date_due.setCalendarPopup(True)
+        self.date_due.setDate(QDate.currentDate().addDays(14))
+        self.date_due.setDisplayFormat("dd.MM.yyyy")
+        
+        header_layout.addWidget(QLabel("Тип:"), 0, 0)
+        header_layout.addWidget(self.inv_type, 0, 1)
+        header_layout.addWidget(QLabel("Номер:"), 0, 2)
+        header_layout.addWidget(self.inv_number, 0, 3)
+        header_layout.addWidget(QLabel("Дата на издаване:"), 1, 0)
+        header_layout.addWidget(self.date_issued, 1, 1)
+        header_layout.addWidget(QLabel("Падеж:"), 1, 2)
+        header_layout.addWidget(self.date_due, 1, 3)
+        
+        header_group.setLayout(header_layout)
+        main_layout.addWidget(header_group)
+        
+        # 2. Client Selection & Data
+        client_group = QGroupBox("Данни за Получателя (Контрагент)")
+        client_layout = QGridLayout()
+        
+        self.client_selector = QComboBox()
+        self.client_selector.setEditable(True)
+        self.client_selector.setPlaceholderText("Избор на клиент (търси по име или ЕИК)...")
+        # Add event filter for double click
+        if self.client_selector.lineEdit():
+            self.client_selector.lineEdit().installEventFilter(self)
+            
+        self.load_clients()
+        self.client_selector.currentIndexChanged.connect(self.on_client_selected)
+        
+        btn_search_client = QPushButton("🔍")
+        btn_search_client.setToolTip("Отвори мениджър на контрагенти")
+        btn_search_client.setFixedWidth(40)
+        btn_search_client.clicked.connect(self.open_client_manager)
+        
+        self.client_name = QLineEdit()
+        self.client_eik = QLineEdit()
+        self.client_vat = QLineEdit()
+        self.client_address = QLineEdit()
+        self.client_mol = QLineEdit()
+        
+        client_layout.addWidget(QLabel("Избор от базата:"), 0, 0)
+        
+        sel_layout = QHBoxLayout()
+        sel_layout.addWidget(self.client_selector)
+        sel_layout.addWidget(btn_search_client)
+        client_layout.addLayout(sel_layout, 0, 1, 1, 3)
+        client_layout.addWidget(QLabel("Фирма Получател:"), 1, 0)
+        client_layout.addWidget(self.client_name, 1, 1)
+        client_layout.addWidget(QLabel("ЕИК:"), 1, 2)
+        
+        eik_layout = QHBoxLayout()
+        eik_layout.addWidget(self.client_eik)
+        self.btn_check_vat = QPushButton("🔍")
+        self.btn_check_vat.setFixedWidth(40)
+        self.btn_check_vat.setToolTip("Провери по ЕИК в НАП/Търговски регистър")
+        self.btn_check_vat.clicked.connect(self.check_vat_status)
+        eik_layout.addWidget(self.btn_check_vat)
+        
+        client_layout.addLayout(eik_layout, 1, 3)
+        client_layout.addWidget(QLabel("№ по ЗДДС:"), 2, 0)
+        client_layout.addWidget(self.client_vat, 2, 1)
+        client_layout.addWidget(QLabel("Адрес:"), 2, 2)
+        client_layout.addWidget(self.client_address, 2, 3)
+        client_layout.addWidget(QLabel("МОЛ:"), 3, 0)
+        client_layout.addWidget(self.client_mol, 3, 1)
+        
+        client_group.setLayout(client_layout)
+        main_layout.addWidget(client_group)
+        
+        # 3. Items Table
+        items_group = QGroupBox("Артикули / Услуги / Ремонти")
+        items_layout = QVBoxLayout()
+        
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Описание на стоката/услугата", "Кол.", "Ед. Цена", "Стойност", ""])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(1, 70)
+        self.table.setColumnWidth(2, 100)
+        self.table.setColumnWidth(3, 120)
+        self.table.setColumnWidth(4, 30)
+        
+        items_layout.addWidget(self.table)
+        
+        # Item buttons
+        btns_layout = QHBoxLayout()
+        self.btn_add_manual = QPushButton("➕ Ръчно добавяне")
+        self.btn_add_manual.clicked.connect(self.add_manual_item)
+        self.btn_import_product = QPushButton("📦 Избор от Продукти")
+        self.btn_import_product.clicked.connect(self.import_product)
+        
+        btns_layout.addWidget(self.btn_add_manual)
+        btns_layout.addWidget(self.btn_import_product)
+        btns_layout.addStretch()
+        items_layout.addLayout(btns_layout)
+        
+        items_group.setLayout(items_layout)
+        main_layout.addWidget(items_group)
+        
+        # 4. Footer (Totals, Payment, Methods)
+        footer_layout = QHBoxLayout()
+        
+        # Payment details
+        pay_group = QGroupBox("Плащане и бележки")
+        pay_layout = QFormLayout()
+        self.pay_method = QComboBox()
+        self.pay_method.addItems(["Банков път", "В брой", "С карта", "Наложен платеж"])
+        self.pay_status = QComboBox()
+        self.pay_status.addItems(["PENDING", "PAID", "PARTIAL", "OVERDUE"])
+        self.notes = QTextEdit()
+        self.notes.setPlaceholderText("Допълнителна информация...")
+        self.notes.setMaximumHeight(80)
+        
+        pay_layout.addRow("Начин на плащане:", self.pay_method)
+        pay_layout.addRow("Статус на плащане:", self.pay_status)
+        pay_layout.addRow("Забележка:", self.notes)
+        pay_group.setLayout(pay_layout)
+        footer_layout.addWidget(pay_group, 1)
+        
+        # Totals
+        totals_group = QGroupBox("Суми")
+        totals_layout = QFormLayout()
+        
+        self.lbl_subtotal = QLabel("0.00 €")
+        self.lbl_subtotal.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.lbl_vat = QLabel("0.00 €")
+        self.lbl_vat.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.lbl_total = QLabel("0.00 €")
+        self.lbl_total.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.lbl_total.setStyleSheet("font-size: 20px; font-weight: bold; color: #d35400;")
+        
+        self.lbl_bgn_total = QLabel("Равностойност: 0.00 лв.")
+        self.lbl_bgn_total.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.lbl_bgn_total.setStyleSheet("font-style: italic; color: #7f8c8d;")
+        
+        self.vat_rate = QSpinBox()
+        self.vat_rate.setRange(0, 100)
+        self.vat_rate.setValue(20)
+        self.vat_rate.setSuffix(" %")
+        self.vat_rate.valueChanged.connect(self.calculate_totals)
+        
+        totals_layout.addRow("<b>Данъчна основа:</b>", self.lbl_subtotal)
+        totals_layout.addRow("ДДС ставка:", self.vat_rate)
+        totals_layout.addRow("ДДС сума:", self.lbl_vat)
+        totals_layout.addRow("<font size='5' color='#2c3e50'><b>ТОТАЛ:</b></font>", self.lbl_total)
+        totals_layout.addRow("", self.lbl_bgn_total)
+        
+        totals_group.setLayout(totals_layout)
+        footer_layout.addWidget(totals_group, 1)
+        
+        main_layout.addLayout(footer_layout)
+        
+        # 5. Dialog Buttons
+        btns = QHBoxLayout()
+        self.btn_save = QPushButton("💾 ЗАПИС НА ДОКУМЕНТА")
+        self.btn_save.setStyleSheet("background-color: #27ae60; color: white; font-weight: bold; padding: 12px; font-size: 14px;")
+        self.btn_save.clicked.connect(self.save_invoice)
+        
+        self.btn_cancel = QPushButton("Отказ")
+        self.btn_cancel.setMinimumHeight(40)
+        self.btn_cancel.clicked.connect(self.reject)
+        
+        btns.addStretch()
+        btns.addWidget(self.btn_cancel)
+        btns.addWidget(self.btn_save)
+        main_layout.addLayout(btns)
+
+    # --- Methods ---
+    def open_client_manager(self):
+        """Open the professional client management dialog"""
+        dlg = ClientManagerDialog(parent=self)
+        if dlg.exec():
+            if dlg.selected_client:
+                c = dlg.selected_client
+                self.client_name.setText(c.get('company_name', ''))
+                self.client_eik.setText(c.get('eik', ''))
+                self.client_vat.setText(c.get('vat_registered') if isinstance(c.get('vat_registered'), str) else ("BG"+c['eik'] if c.get('vat_registered') else ""))
+                self.client_address.setText(c.get('address', ''))
+                self.client_mol.setText(c.get('mol', ''))
+                
+                # Try to select in combo as well
+                idx = self.client_selector.findText(c['company_name'])
+                if idx >= 0:
+                    self.client_selector.setCurrentIndex(idx)
+        # Reload clients in case some were added/deleted
+        self.load_clients()
+
+    def eventFilter(self, obj, event):
+        """Handle double click on client selector line edit"""
+        from PyQt6.QtCore import QEvent
+        if obj == self.client_selector.lineEdit() and event.type() == QEvent.Type.MouseButtonDblClick:
+            self.open_client_manager()
+            return True
+        return super().eventFilter(obj, event)
+
+    def load_clients(self):
+        try:
+            self.clients = get_all_clients()
+            self.client_selector.clear()
+            self.client_selector.addItem("", None)
+            for c in self.clients:
+                display = f"{c['company_name']} ({c['eik']})"
+                self.client_selector.addItem(display, c)
+        except:
+            pass
+            
+    def check_vat_status(self):
+        """Check VAT registration status online and fill data"""
+        eik = self.client_eik.text().strip()
+        if not eik:
+            QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК първо.")
+            return
+
+        result = check_vat(eik)
+        
+        if result is None:
+            QMessageBox.warning(self, "Няма връзка", "Няма информация или връзка с регистъра.")
+        else:
+            if result.get("name"):
+                self.client_name.setText(result.get("name", ""))
+                
+                # Combine City + Address if needed, or just address
+                # InvoiceDialog has only header fields for Address, City usually separate or combined.
+                # In this dialog: self.client_address
+                addr_full = f"{result.get('city', '')}, {result.get('address', '')}".strip(', ')
+                self.client_address.setText(addr_full)
+                
+                self.client_mol.setText(result.get("mol", ""))
+                
+                if result.get("valid"):
+                    self.client_vat.setText(str(result.get('vat_number', 'BG'+eik)))
+                    status_text = "ДА"
+                else:
+                    self.client_vat.setText("")
+                    status_text = "НЕ"
+                
+                QMessageBox.information(self, "Успех", f"Открита фирма:\n{result.get('name')}\nЗДДС: {status_text}")
+            else:
+                QMessageBox.information(self, "Резултат", "Не бе открита информация за този ЕИК.")
+
+    def on_client_selected(self):
+        data = self.client_selector.currentData()
+        if data:
+            self.client_name.setText(data.get('company_name', ''))
+            self.client_eik.setText(data.get('eik', ''))
+            self.client_vat.setText(data.get('vat_registered', ''))
+            self.client_address.setText(f"{data.get('city', '')}, {data.get('address', '')}")
+            self.client_mol.setText(data.get('mol', ''))
+            
+    def update_invoice_number(self):
+        t = 'INV' if self.inv_type.currentIndex() == 0 else 'PRO'
+        self.inv_number.setText(get_next_invoice_number(t))
+        
+    def add_manual_item(self):
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.setup_row_widgets(row)
+        
+    def setup_row_widgets(self, row, desc="", qty=1, price=0):
+        # Description
+        edit_desc = QLineEdit(desc)
+        self.table.setCellWidget(row, 0, edit_desc)
+        
+        # Qty
+        spin_qty = QDoubleSpinBox()
+        spin_qty.setRange(0.001, 999999)
+        spin_qty.setValue(qty)
+        spin_qty.setDecimals(3)
+        spin_qty.valueChanged.connect(self.calculate_totals)
+        self.table.setCellWidget(row, 1, spin_qty)
+        
+        # Price
+        spin_price = QDoubleSpinBox()
+        spin_price.setRange(0, 999999)
+        spin_price.setValue(price)
+        spin_price.setDecimals(2)
+        spin_price.valueChanged.connect(self.calculate_totals)
+        self.table.setCellWidget(row, 2, spin_price)
+        
+        # Total (Label)
+        lbl_total = QLabel(f"{qty * price:.2f}")
+        lbl_total.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lbl_total.setStyleSheet("font-weight: bold; color: #34495e;")
+        self.table.setCellWidget(row, 3, lbl_total)
+        
+        # Delete button
+        btn_del = QPushButton("❌")
+        btn_del.setFlat(True)
+        btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
+        # We need to capture the current row strictly
+        btn_del.clicked.connect(self.make_delete_callback(row))
+        self.table.setCellWidget(row, 4, btn_del)
+        
+        self.calculate_totals()
+
+    def make_delete_callback(self, row_idx):
+        def callback():
+            # Find the actual current row of this button as table might have shifted
+            for r in range(self.table.rowCount()):
+                if self.table.cellWidget(r, 4) == self.sender():
+                    self.table.removeRow(r)
+                    break
+            self.calculate_totals()
+        return callback
+        
+    def import_product(self):
+        products = get_all_products()
+        if not products:
+            QMessageBox.warning(self, "Внимание", "Няма намерени продукти в номенклатурата.")
+            return
+            
+        from PyQt6.QtWidgets import QInputDialog
+        items_list = [f"{p['name']} ({p['price']:.2f} {p['currency']})" for p in products]
+        item, ok = QInputDialog.getItem(self, "Избор на продукт", "Продукт:", items_list, 0, False)
+        
+        if ok and item:
+            idx = items_list.index(item)
+            p = products[idx]
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.setup_row_widgets(row, p['name'], 1, p['price'])
+
+    def calculate_totals(self):
+        subtotal = 0
+        for r in range(self.table.rowCount()):
+            qty_widget = self.table.cellWidget(r, 1)
+            price_widget = self.table.cellWidget(r, 2)
+            if not qty_widget or not price_widget:
+                continue
+                
+            qty = qty_widget.value()
+            price = price_widget.value()
+            row_total = qty * price
+            subtotal += row_total
+            self.table.cellWidget(r, 3).setText(f"{row_total:.2f}")
+            
+        vat_rate = self.vat_rate.value()
+        vat_amount = subtotal * (vat_rate / 100)
+        total = subtotal + vat_amount
+        total_bgn = total * self.FIXED_EXCHANGE_RATE
+        
+        self.lbl_subtotal.setText(f"{subtotal:.2f} €")
+        self.lbl_vat.setText(f"{vat_amount:.2f} €")
+        self.lbl_total.setText(f"{total:.2f} €")
+        self.lbl_bgn_total.setText(f"Равностойност: {total_bgn:.2f} лв.")
+        
+    def save_invoice(self):
+        if not self.client_name.text() or not self.inv_number.text():
+            QMessageBox.warning(self, "Грешка", "Моля попълнете номер на документ и име на клиент!")
+            self.inv_number.setFocus()
+            return
+            
+        if self.table.rowCount() == 0:
+            QMessageBox.warning(self, "Грешка", "Добавете поне един артикул!")
+            return
+            
+        # Collect items
+        items_to_save = []
+        for r in range(self.table.rowCount()):
+            desc_widget = self.table.cellWidget(r, 0)
+            if not desc_widget or not desc_widget.text():
+                QMessageBox.warning(self, "Грешка", f"Артикул на ред {r+1} няма описание!")
+                return
+            items_to_save.append({
+                'description': desc_widget.text(),
+                'quantity': self.table.cellWidget(r, 1).value(),
+                'unit_price': self.table.cellWidget(r, 2).value()
+            })
+            
+        # Collect header data
+        client_data = self.client_selector.currentData()
+        data = {
+            'number': self.inv_number.text(),
+            'type': 'INV' if self.inv_type.currentIndex() == 0 else 'PRO',
+            'client_id': client_data['id'] if client_data else None,
+            'client_name': self.client_name.text(),
+            'client_eik': self.client_eik.text(),
+            'client_vat': self.client_vat.text(),
+            'client_address': self.client_address.text(),
+            'client_mol': self.client_mol.text(),
+            'date_issued': self.date_issued.date().toString("yyyy-MM-dd"),
+            'date_due': self.date_due.date().toString("yyyy-MM-dd"),
+            'vat_rate': self.vat_rate.value(),
+            'currency': 'EUR',
+            'payment_status': self.pay_status.currentText(),
+            'payment_method': self.pay_method.currentText(),
+            'notes': self.notes.toPlainText(),
+            'total_base': sum(i['quantity'] * i['unit_price'] for i in items_to_save),
+            'total_vat': sum(i['quantity'] * i['unit_price'] for i in items_to_save) * (self.vat_rate.value() / 100),
+            'total_amount': sum(i['quantity'] * i['unit_price'] for i in items_to_save) * (1 + self.vat_rate.value() / 100)
+        }
+        
+        try:
+            user_id, username = get_user_auth(self)
+            if self.invoice_data and self.invoice_data.get('id'):
+                invoice_id = self.invoice_data['id']
+                if update_invoice(invoice_id, data, items_to_save, user_id=user_id, username=username):
+                    msg = f"Документ №{data['number']} бе успешно обновен."
+                else:
+                    raise Exception("Неуспешно обновяване в базата.")
+            else:
+                invoice_id = add_invoice(data, items_to_save)
+                msg = f"Документ №{data['number']} бе успешно записан."
+                
+            if invoice_id:
+                reply = QMessageBox.question(self, "Успех", 
+                    f"{msg}\nЖелаете ли да генерирате PDF файл?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    self.export_to_pdf_action(data, items_to_save)
+                
+                self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при запис на фактура: {str(e)}")
+
+    def export_to_pdf_action(self, data, items):
+        """Helper to trigger PDF generation and open it"""
+        prefix = "Faktura" if data['type'] == 'INV' else "Proforma"
+        default_name = f"{prefix}_{data['number']}.pdf"
+        
+        save_path = os.path.join(os.path.expanduser("~"), "Documents", "ContractsApp", "Invoices")
+        os.makedirs(save_path, exist_ok=True)
+        
+        file_path = os.path.join(save_path, default_name)
+        
+        data_for_pdf = data.copy()
+        data_for_pdf['items'] = items
+        
+        # Fetch seller details from settings
+        from database import get_setting
+        data_for_pdf['seller'] = {
+            'name': get_setting('name', 'Д и Д Фискал Системс ЕООД'),
+            'eik': get_setting('eik', '205634567'),
+            'vat': get_setting('vat', 'BG205634567'),
+            'city': get_setting('city', 'София'),
+            'address': get_setting('address', 'гр. София, бул. България №1'),
+            'mol': get_setting('mol', 'Александър Петров')
+        }
+        
+        if generate_invoice_pdf(data_for_pdf, file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+            return True
+        return False
+
+
+class AuditLogViewerDialog(QDialog):
+    """Dialog for viewing the application's audit trail (history of changes)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("История на промените (Audit Log)")
+        self.setMinimumSize(1100, 700)
+        
+        self.con = get_connection()
+        self.setup_ui()
+        self.load_logs()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Filter Area
+        filter_group = QGroupBox("Филтриране")
+        filter_layout = QHBoxLayout()
+        
+        self.user_filter = QComboBox()
+        self.user_filter.addItem("Всички потребители")
+        # Load unique usernames from DB
+        try:
+            cur = self.con.cursor()
+            cur.execute("SELECT DISTINCT username FROM audit_logs ORDER BY username")
+            for row in cur.fetchall():
+                if row[0]: self.user_filter.addItem(row[0])
+        except: pass
+            
+        self.action_filter = QComboBox()
+        self.action_filter.addItems(["Всички действия", "UPDATE_CLIENT", "UPDATE_DEVICE", "UPDATE_PRODUCT", "UPDATE_INVOICE", "DELETE", "LOGIN"])
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Търсене в детайли/договор...")
+        
+        btn_refresh = QPushButton("🔄 Опресни")
+        btn_refresh.clicked.connect(self.load_logs)
+        
+        filter_layout.addWidget(QLabel("Потребител:"))
+        filter_layout.addWidget(self.user_filter)
+        filter_layout.addWidget(QLabel("Действие:"))
+        filter_layout.addWidget(self.action_filter)
+        filter_layout.addWidget(QLabel("Търсене:"))
+        filter_layout.addWidget(self.search_input)
+        filter_layout.addWidget(btn_refresh)
+        
+        filter_group.setLayout(filter_layout)
+        layout.addWidget(filter_group)
+        
+        # Table
+        self.table = QTableWidget()
+        self.table.setColumnCount(6)
+        self.table.setHorizontalHeaderLabels(["Дата/Час", "Потребител", "Действие", "Договор №", "ID Обект", "Промени / Детайли"])
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.doubleClicked.connect(self.show_details)
+        layout.addWidget(self.table)
+        
+        # Footer
+        btns = QHBoxLayout()
+        btn_close = QPushButton("Затвори")
+        btn_close.clicked.connect(self.reject)
+        btns.addStretch()
+        btns.addWidget(btn_close)
+        layout.addLayout(btns)
+        
+        # Connect signals
+        self.user_filter.currentIndexChanged.connect(self.load_logs)
+        self.action_filter.currentIndexChanged.connect(self.load_logs)
+        self.search_input.textChanged.connect(self.load_logs)
+
+    def load_logs(self):
+        try:
+            cur = self.con.cursor()
+            query = "SELECT timestamp, username, action, contract_number, device_id, details FROM audit_logs WHERE 1=1"
+            params = []
+            
+            user = self.user_filter.currentText()
+            if user != "Всички потребители":
+                query += " AND username = ?"
+                params.append(user)
+                
+            action = self.action_filter.currentText()
+            if action != "Всички действия":
+                query += " AND action = ?"
+                params.append(action)
+                
+            search = self.search_input.text().strip()
+            if search:
+                query += " AND (details LIKE ? OR contract_number LIKE ?)"
+                search_param = f"%{search}%"
+                params.append(search_param)
+                params.append(search_param)
+                
+            query += " ORDER BY timestamp DESC LIMIT 500"
+            
+            cur.execute(query, params)
+            rows = cur.fetchall()
+            
+            self.table.setRowCount(0)
+            for row_idx, row_data in enumerate(rows):
+                self.table.insertRow(row_idx)
+                for col_idx, item in enumerate(row_data):
+                    val = str(item) if item is not None else ""
+                    table_item = QTableWidgetItem(val)
+                    if col_idx == 2: # Highlight actions
+                        if "DELETE" in val: table_item.setForeground(Qt.GlobalColor.red)
+                        elif "UPDATE" in val: table_item.setForeground(Qt.GlobalColor.blue)
+                    self.table.setItem(row_idx, col_idx, table_item)
+        except Exception as e:
+            print(f"Error loading logs: {e}")
+
+    def show_details(self):
+        row = self.table.currentRow()
+        if row < 0: return
+        
+        timestamp = self.table.item(row, 0).text()
+        user = self.table.item(row, 1).text()
+        action = self.table.item(row, 2).text()
+        details = self.table.item(row, 5).text()
+        
+        msg = f"<b>Дата:</b> {timestamp}<br>"
+        msg += f"<b>Потребител:</b> {user}<br>"
+        msg += f"<b>Действие:</b> {action}<br><br>"
+        msg += f"<b>Детайли:</b><br>{details.replace(', ', '<br>')}"
+        
+        QMessageBox.information(self, "Детайли на промяната", msg)
+
+    def closeEvent(self, event):
+        if self.con:
+            self.con.close()
+        super().closeEvent(event)
+
+
+
+class ProtocolDialog(QDialog):
+    """Dialog for creating a Handover Protocol (Приемо-предавателен протокол)"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Нов приемо-предавателен протокол")
+        self.resize(600, 700)
+        self.setup_ui()
+        self.load_counterparties()
+        self.load_service_defaults()
+
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # 1. Counterparty Selection
+        grp_client = QGroupBox("Информация за Контрагент (Получател)")
+        lay_client = QFormLayout()
+        
+        self.combo_client = QComboBox()
+        self.combo_client.setEditable(True)
+        self.combo_client.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.combo_client.currentIndexChanged.connect(self.on_client_selected)
+        
+        self.cp_name = QLineEdit()
+        self.cp_eik = QLineEdit()
+        self.cp_address = QLineEdit()
+        self.cp_mol = QLineEdit()
+        
+        lay_client.addRow("Избери съществуващ:", self.combo_client)
+        lay_client.addRow("Име на фирма:", self.cp_name)
+        
+        # EIK + Check Button
+        eik_layout = QHBoxLayout()
+        eik_layout.addWidget(self.cp_eik)
+        self.btn_check_vat = QPushButton("🔍")
+        self.btn_check_vat.setFixedWidth(40)
+        self.btn_check_vat.setToolTip("Провери по ЕИК в НАП/Търговски регистър")
+        self.btn_check_vat.clicked.connect(self.check_vat_status)
+        eik_layout.addWidget(self.btn_check_vat)
+        
+        lay_client.addRow("ЕИК:", eik_layout)
+        lay_client.addRow("Адрес по рег.:", self.cp_address)
+        lay_client.addRow("МОЛ:", self.cp_mol)
+        
+        grp_client.setLayout(lay_client)
+        layout.addWidget(grp_client)
+        
+        # 2. Technician & Protocol Details
+        grp_proto = QGroupBox("Детайли на протокола")
+        lay_proto = QFormLayout()
+        
+        self.proto_date = QDateEdit(QDate.currentDate())
+        self.proto_date.setCalendarPopup(True)
+        self.proto_date.setDisplayFormat("dd.MM.yyyy")
+        
+        self.tech_egn = QLineEdit()
+        self.tech_capacity = QLineEdit("Сервизен техник")
+        
+        self.proto_desc = QTextEdit()
+        self.proto_desc.setPlaceholderText("Опишете какво се предава и приема (устройство, състояние, окомплектовка)...")
+        self.proto_desc.setMaximumHeight(100)
+        
+        self.proto_notes = QLineEdit()
+        self.proto_ref = QLineEdit()
+        self.proto_ref.setPlaceholderText("Договор № или Фактура №")
+        
+        lay_proto.addRow("Дата:", self.proto_date)
+        lay_proto.addRow("ЕГН на техник:", self.tech_egn)
+        lay_proto.addRow("В качеството на:", self.tech_capacity)
+        lay_proto.addRow("Описание на вещите:", self.proto_desc)
+        lay_proto.addRow("Забележки:", self.proto_notes)
+        lay_proto.addRow("Основание (№ дог/ф-ра):", self.proto_ref)
+        
+        grp_proto.setLayout(lay_proto)
+        layout.addWidget(grp_proto)
+        
+        # Buttons
+        btns = QHBoxLayout()
+        btn_gen = QPushButton("📝 Генерирай и отвори Word файл")
+        btn_gen.setStyleSheet("background-color: #2c3e50; color: white; font-weight: bold; padding: 10px;")
+        btn_gen.clicked.connect(self.generate_protocol)
+        
+        btn_close = QPushButton("Отказ")
+        btn_close.clicked.connect(self.reject)
+        
+        btns.addWidget(btn_gen)
+        btns.addWidget(btn_close)
+        layout.addLayout(btns)
+
+    def load_counterparties(self):
+        self.counterparties = get_all_counterparties()
+        self.combo_client.clear()
+        self.combo_client.addItem("-- Изберете или добавете нов --", None)
+        for cp in self.counterparties:
+            self.combo_client.addItem(cp['name'], cp)
+            
+        completer = QCompleter([cp['name'] for cp in self.counterparties])
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self.combo_client.setCompleter(completer)
+
+    def load_service_defaults(self):
+        # Load from settings
+        self.tech_egn.setText(get_setting('tech_egn', ''))
+        # capacity remains default or last used? for now default
+
+    def check_vat_status(self):
+        """Check VAT registration status online and fill data"""
+        eik = self.cp_eik.text().strip()
+        if not eik:
+            QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК първо.")
+            return
+
+        result = check_vat(eik)
+        
+        if result is None:
+            QMessageBox.warning(self, "Няма връзка", "Няма информация или връзка с регистъра.")
+        else:
+            if result.get("name"):
+                self.cp_name.setText(result.get("name", ""))
+                
+                # Combine City + Address for the single address field
+                addr_full = f"{result.get('city', '')}, {result.get('address', '')}".strip(', ')
+                self.cp_address.setText(addr_full)
+                
+                self.cp_mol.setText(result.get("mol", ""))
+                
+                QMessageBox.information(self, "Успех", f"Открита фирма:\n{result.get('name')}")
+            else:
+                QMessageBox.information(self, "Резултат", "Не бе открита информация за този ЕИК.")
+
+    def on_client_selected(self, index):
+        data = self.combo_client.itemData(index)
+        if data:
+            self.cp_name.setText(data['name'])
+            self.cp_eik.setText(data['eik'])
+            self.cp_address.setText(data['address'])
+            self.cp_mol.setText(data['mol'])
+        else:
+            if index > 0: # Editing existing name
+                pass 
+            else: # Reset
+                self.cp_name.clear()
+                self.cp_eik.clear()
+                self.cp_address.clear()
+                self.cp_mol.clear()
+
+    def generate_protocol(self):
+        # 1. Validation
+        if not self.cp_name.text().strip():
+            QMessageBox.warning(self, "Грешка", "Моля въведете име на контрагент!")
+            return
+            
+        # 2. Check if new counterparty or update
+        cp_data = self.combo_client.currentData()
+        cp_id = cp_data['id'] if cp_data else None
+        
+        name = self.cp_name.text().strip()
+        eik = self.cp_eik.text().strip()
+        addr = self.cp_address.text().strip()
+        mol = self.cp_mol.text().strip()
+        
+        if not cp_id:
+            # Check if name already exists in list (avoid duplicates)
+            existing = next((cp for cp in self.counterparties if cp['name'].lower() == name.lower()), None)
+            if existing:
+                cp_id = existing['id']
+                update_counterparty(cp_id, name, eik, addr, mol, "")
+            else:
+                cp_id = add_counterparty(name, eik, addr, mol, "")
+        else:
+            # Maybe update existing if changed?
+            update_counterparty(cp_id, name, eik, addr, mol, "")
+
+        # 3. Gather data for Word template
+        data = {
+            'date': self.proto_date.date().toString("dd.MM.yyyy"),
+            'service_firm': get_setting('name', 'Д и Д Фискал Системс ЕООД'),
+            'service_eik': get_setting('eik', '205634567'),
+            'service_address': get_setting('address', 'гр. София, бул. България №1'),
+            'service_mol': get_setting('mol', 'Александър Петров'),
+            'tech_egn': self.tech_egn.text().strip(),
+            'capacity': self.tech_capacity.text().strip(),
+            'client_name': name,
+            'client_eik': eik,
+            'client_address': addr,
+            'client_mol': mol,
+            'description': self.proto_desc.toPlainText().strip(),
+            'notes': self.proto_notes.text().strip(),
+            'ref_number': self.proto_ref.text().strip()
+        }
+        
+        # 4. Generate
+        file_path = generate_handover_protocol(data)
+        
+        if file_path:
+            # 5. Save record to DB
+            proto_record = {
+                'protocol_date': self.proto_date.date().toString("yyyy-MM-dd"),
+                'technician_egn': data['tech_egn'],
+                'capacity': data['capacity'],
+                'counterparty_id': cp_id,
+                'description': data['description'],
+                'notes': data['notes'],
+                'ref_number': data['ref_number'],
+                'docx_path': file_path
+            }
+            add_handover_protocol(proto_record)
+            
+            QMessageBox.information(self, "Успех", f"Протоколът е генериран успешно:\n{file_path}\n\nФайлът ще бъде отворен автоматично.")
+            
+            # Open the file
+            if os.path.exists(file_path):
+                QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+                
+            self.accept()
+        else:
+            QMessageBox.critical(self, "Грешка", "Възникна грешка при генериране на Word документа!")
