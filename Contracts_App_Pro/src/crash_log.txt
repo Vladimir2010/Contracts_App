@@ -127,3 +127,15 @@ Traceback (most recent call last):
     settings_path = os.path.join(get_app_root(), "data", "settings.json")
                                  ^^^^^^^^^^^^
 NameError: name 'get_app_root' is not defined
+
+==================================================
+Timestamp: 2026-02-09 12:59:37
+TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object
+
+==================================================
+Timestamp: 2026-02-09 13:17:44
+TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object
+
+==================================================
+Timestamp: 2026-02-09 16:27:46
+TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object

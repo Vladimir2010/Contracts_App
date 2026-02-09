@@ -188,6 +188,14 @@ class AutomationThread(QThread):
                         30: auto_cfg.get('email_30d_ahead', True)
                     }
                     
+                    # Custom Communication Templates
+                    comm_cfg = settings.get('communication', {})
+                    email_tpl_subject = comm_cfg.get('email_subject') or "⚠️ ВНИМАНИЕ: Договор(и) изтичащи след {days} дни!"
+                    email_tpl_body = comm_cfg.get('email_body') or "Следните договори изтичат точно след {days} дни:\n\n{list}\n\nМоля, свържете се с клиентите за подновяване.\n\nПоздрави,\nContracts App Automation"
+                    viber_tpl = comm_cfg.get('viber_template') or "⚠️ Изтичащи след {days} дни:\n{list}"
+                    viber_token = comm_cfg.get('viber_token', "")
+                    viber_receiver = comm_cfg.get('viber_receiver', "")
+
                     smtp_cfg = {
                         'server': auto_cfg.get('smtp_server'),
                         'port': auto_cfg.get('smtp_port', 587),
@@ -202,17 +210,26 @@ class AutomationThread(QThread):
                         if enabled:
                             exp_clients = get_contracts_expiring_in_days(days)
                             if exp_clients:
-                                subject = f"⚠️ ВНИМАНИЕ: Договор(и) изтичащи след {days} дни!"
-                                body = f"Следните договори изтичат точно след {days} дни:\n\n"
+                                # Prepare list of clients
+                                clients_list = ""
                                 for c in exp_clients:
-                                    body += f"- {c['company_name']} (Договор № {c['contract_number']})\n"
-                                body += "\nМоля, свържете се с клиентите за подновяване.\n\nПоздрави,\nContracts App Automation"
+                                    clients_list += f"- {c['company_name']} (Договор № {c['contract_number']})\n"
+                                
+                                # 1. Email Alert
+                                subject = email_tpl_subject.replace("{days}", str(days))
+                                body = email_tpl_body.replace("{days}", str(days)).replace("{list}", clients_list)
                                 
                                 from email_manager import send_email_with_attachment
                                 if send_email_with_attachment(smtp_cfg, recipient, subject, body):
                                     print(f"Sent {days} day alert to {recipient}")
                                     any_alerts_sent = True
-                                    
+                                
+                                # 2. Viber Alert
+                                if viber_token and viber_receiver:
+                                    from viber_manager import send_viber_message
+                                    v_text = viber_tpl.replace("{days}", str(days)).replace("{list}", clients_list)
+                                    send_viber_message(viber_token, viber_receiver, v_text)
+
                     # Update last alert date
                     settings['automation']['last_alert_date'] = current_date_key
                     with open(settings_path, 'w', encoding='utf-8') as f:
@@ -273,11 +290,26 @@ class SplashScreen(QSplashScreen):
         super().__init__(pixmap)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
         
-        # Paths to images safely via utility
+        # Load custom branding from settings.json
+        from path_utils import get_app_root
+        branding_title = "Регистър на\nфискални устройства"
         logo_path = get_resource_path('logo-d-d.jpg')
         
+        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        if os.path.exists(settings_path):
+            try:
+                import json
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    local_data = json.load(f)
+                    branding = local_data.get('branding', {})
+                    if branding.get('app_title'):
+                        branding_title = branding.get('app_title').replace(" ", "\n", 1)
+                    if branding.get('splash_path') and os.path.exists(branding.get('splash_path')):
+                        logo_path = branding.get('splash_path')
+            except: pass
+
         # Title Label
-        self.titleLabel = QLabel("Регистър на\nфискални устройства", self)
+        self.titleLabel = QLabel(branding_title, self)
         self.titleLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.titleLabel.setStyleSheet("font-size: 32px; font-weight: bold; color: #2c3e50; margin-top: 20px;")
         self.titleLabel.setGeometry(0, 30, canvas_width, 100)
@@ -286,12 +318,13 @@ class SplashScreen(QSplashScreen):
         self.logoLabel = QLabel(self)
         if os.path.exists(logo_path):
             original_pixmap = QPixmap(logo_path)
-            scaled_logo = original_pixmap.scaled(350, 250, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            # Adjust scaling for potential custom splash images
+            scaled_logo = original_pixmap.scaled(600, 300, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self.logoLabel.setPixmap(scaled_logo)
             self.logoLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            # Center the logo in the middle of the remaining space
+            # Center the logo
             logo_x = (canvas_width - scaled_logo.width()) // 2
-            logo_y = 150 # Starting after title
+            logo_y = 130 
             self.logoLabel.setGeometry(logo_x, logo_y, scaled_logo.width(), scaled_logo.height())
         
         # Layout for progress bar
@@ -325,6 +358,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Регистър на фискални устройства")
         self.setMinimumSize(1400, 800)
+        self.apply_branding()
         
         # Create central tab widget
         self.tabs = QTabWidget()
@@ -708,6 +742,7 @@ class MainWindow(QMainWindow):
 
     def refresh_stats(self):
         try:
+            from database import get_db_stats
             stats = get_db_stats()
             
             # Update cards
@@ -715,7 +750,22 @@ class MainWindow(QMainWindow):
             self.card_expired.findChild(QLabel, "value_label").setText(str(stats['expired_contracts']))
             self.card_expiring.findChild(QLabel, "value_label").setText(str(stats['expiring_soon']))
             self.card_revenue.findChild(QLabel, "value_label").setText(f"{stats['monthly_revenue']:.2f} лв.")
-            
+
+            # Apply visibility from settings
+            from path_utils import get_app_root
+            settings_path = os.path.join(get_app_root(), "data", "settings.json")
+            if os.path.exists(settings_path):
+                import json
+                try:
+                    with open(settings_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        dash = data.get('dashboard', {})
+                        self.card_active.setVisible(dash.get('show_active', True))
+                        self.card_expired.setVisible(dash.get('show_expiring', True))
+                        self.card_expiring.setVisible(dash.get('show_total', True)) 
+                        self.card_revenue.setVisible(dash.get('show_recent', True))
+                except: pass
+
             # Update distribution
             dist_text = ""
             for model, count in stats['model_dist'].items():
@@ -724,11 +774,24 @@ class MainWindow(QMainWindow):
             
             if not dist_text:
                 dist_text = "Няма данни за устройства."
-                
             self.dist_label.setText(dist_text)
-            
+
         except Exception as e:
-            QMessageBox.critical(self, "Грешка", f"Грешка при зареждане на статистика: {str(e)}")
+            print(f"Error refreshing stats: {e}")
+
+    def apply_branding(self):
+        """Load custom title from settings"""
+        from path_utils import get_app_root
+        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        if os.path.exists(settings_path):
+            try:
+                import json
+                with open(settings_path, 'r', encoding='utf-8') as f:
+                    local_data = json.load(f)
+                    branding = local_data.get('branding', {})
+                    if branding.get('app_title'):
+                        self.setWindowTitle(branding.get('app_title'))
+            except: pass
 
     def on_tab_changed(self, index):
         if index == 2: # Statistics tab
@@ -1041,7 +1104,7 @@ class MainWindow(QMainWindow):
         """Show About dialog"""
         QMessageBox.about(self, "За програмата", 
             """<h3>Contracts App Professional</h3>
-            <p><b>Версия:</b> 1.0.5</p>
+            <p><b>Версия:</b> 1.0.9</p>
             <p>Професионална система за управление на договори и фискални устройства.</p>
             <p>Този софтуер е предназначен за автоматизиране на процесите по регистрация, 
             дерегистрация и поддръжка на ФУ.</p>
@@ -1919,7 +1982,18 @@ class MainWindow(QMainWindow):
         self.tray_icon.show()
 
     def on_tray_icon_activated(self, reason):
-        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+        try:
+            # Defensive check for ActivationReason conversion bug in some PyQt versions
+            # Trigger is usually 3 (Left-Click), ContextMenu is 1 (Right-Click)
+            r_val = int(reason)
+            if r_val == QSystemTrayIcon.ActivationReason.Trigger.value:
+                if self.isVisible():
+                    self.hide()
+                else:
+                    self.show_normal()
+        except (TypeError, ValueError, Exception):
+            # Fallback: if conversion fails, we still want to toggle visibility 
+            # as it's the expected primary action for a tray icon click
             if self.isVisible():
                 self.hide()
             else:

@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QMessageBox, QDateEdit, QCheckBox, QLabel, QTabWidget, QWidget,
     QFileDialog, QSpinBox, QDoubleSpinBox, QCompleter, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QTextEdit, QGroupBox, QGridLayout
+    QHeaderView, QAbstractItemView, QTextEdit, QGroupBox, QGridLayout, QListWidget
 )
 from PyQt6.QtCore import QDate, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices
@@ -1078,6 +1078,11 @@ class ExpiringContractsDialog(QDialog):
         self.btn_export_pdf.setVisible(False)
         export_layout.addWidget(self.btn_export_pdf)
         
+        self.btn_send_email = QPushButton("📧 Изпрати по имейл")
+        self.btn_send_email.clicked.connect(self.send_email_report)
+        self.btn_send_email.setVisible(False)
+        export_layout.addWidget(self.btn_send_email)
+        
         export_layout.addStretch()
         layout.addLayout(export_layout)
         
@@ -1109,12 +1114,14 @@ class ExpiringContractsDialog(QDialog):
             self.btn_export_excel.setVisible(False)
             self.btn_export_word.setVisible(False)
             self.btn_export_pdf.setVisible(False)
+            self.btn_send_email.setVisible(False)
         else:
             count = len(self.current_data)
             self.status_label.setText(f"✅ Намерени {count} изтичащи договора за {month:02d}.{year}")
             self.btn_export_excel.setVisible(True)
             self.btn_export_word.setVisible(True)
             self.btn_export_pdf.setVisible(True)
+            self.btn_send_email.setVisible(True)
             
             # Notify parent to update table
             if self.parent():
@@ -1166,6 +1173,59 @@ class ExpiringContractsDialog(QDialog):
                 os.startfile(filename)
             else:
                 QMessageBox.critical(self, "Грешка", "Грешка при експорт!")
+
+    def send_email_report(self):
+        """Send report via Email"""
+        from path_utils import get_app_root
+        import json
+        
+        # 1. Generate Temp PDF
+        temp_pdf = os.path.join(get_app_root(), "temp_expiring_report.pdf")
+        title = f"Справка за изтичащи договори - {self.month_spin.value():02d}.{self.year_spin.value()}"
+        if not export_to_pdf(self.current_data, self.headers, temp_pdf, title):
+            QMessageBox.critical(self, "Грешка", "Грешка при генериране на PDF файл за прикачване!")
+            return
+
+        # 2. Load SMTP settings
+        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        if not os.path.exists(settings_path):
+            QMessageBox.warning(self, "Внимание", "Не са намерени настройки за имейл (Automation)!")
+            return
+            
+        try:
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                auto_cfg = settings.get('automation', {})
+                
+                smtp_cfg = {
+                    'server': auto_cfg.get('smtp_server'),
+                    'port': auto_cfg.get('smtp_port', 587),
+                    'user': auto_cfg.get('smtp_user'),
+                    'password': auto_cfg.get('smtp_password'),
+                    'use_tls': auto_cfg.get('smtp_tls', True)
+                }
+                recipient = auto_cfg.get('report_recipient')
+                
+                if not smtp_cfg['server'] or not recipient:
+                    QMessageBox.warning(self, "Внимание", "Моля настройте SMTP сървър и получател в Настройки -> Автоматизация!")
+                    return
+
+                # 3. Send Email
+                subject = f"Ръчна справка: {title}"
+                body = f"Здравейте,\n\nВ приложение изпращам ръчно генерирана справка за изтичащи договори през {self.month_spin.value():02d}.{self.year_spin.value()}.\n\nПоздрави,\nContracts App Professional"
+                
+                if send_email_with_attachment(smtp_cfg, recipient, subject, body, temp_pdf):
+                    QMessageBox.information(self, "Успех", f"Справката беше изпратена успешно на {recipient}!")
+                else:
+                    QMessageBox.critical(self, "Грешка", "Неуспешно изпращане на имейл. Проверете настройките.")
+                    
+        except Exception as e:
+            QMessageBox.critical(self, "Грешка", f"Грешка при зареждане на настройки или изпращане: {e}")
+        finally:
+            # Cleanup temp file
+            if os.path.exists(temp_pdf):
+                try: os.remove(temp_pdf)
+                except: pass
 
 class DeregistrationDialog(QDialog):
     def __init__(self, parent=None, device_data=None):
@@ -1658,7 +1718,24 @@ class SettingsDialog(QDialog):
         # Tab 8: Cloud Backup (New)
         self.tab_cloud = QWidget()
         self.init_cloud_backup_tab()
-        self.tabs.addTab(self.tab_cloud, "☁️ Облачен Архив")
+        self.tabs.addTab(self.tab_cloud, "☁️ Архив")
+
+        # Phase 14 Tabs
+        self.tab_branding = QWidget()
+        self.init_branding_tab()
+        self.tabs.addTab(self.tab_branding, "🎨 Брандиране")
+
+        self.tab_templates = QWidget()
+        self.init_templates_tab()
+        self.tabs.addTab(self.tab_templates, "📝 Шаблони")
+
+        self.tab_comm = QWidget()
+        self.init_comm_tab()
+        self.tabs.addTab(self.tab_comm, "💬 Комуникация")
+
+        self.tab_dashboard = QWidget()
+        self.init_dashboard_tab()
+        self.tabs.addTab(self.tab_dashboard, "📊 Дашборд")
         
         layout.addWidget(self.tabs)
         
@@ -1776,6 +1853,166 @@ class SettingsDialog(QDialog):
         layout.addRow("", self.c_autorun)
         
         self.tab_config.setLayout(layout)
+
+    def init_branding_tab(self):
+        layout = QFormLayout()
+        
+        self.br_app_title = QLineEdit()
+        self.br_app_title.setPlaceholderText("Система за Договори")
+        
+        self.br_splash_path = QLineEdit()
+        self.br_splash_path.setReadOnly(True)
+        btn_browse = QPushButton("Избери снимка")
+        btn_browse.clicked.connect(self.browse_splash_image)
+        
+        self.br_clear_splash = QPushButton("Изчисти (По подразбиране)")
+        self.br_clear_splash.clicked.connect(lambda: self.br_splash_path.clear())
+        
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(self.br_splash_path)
+        h_layout.addWidget(btn_browse)
+        
+        layout.addRow("Заглавие на Програмата:", self.br_app_title)
+        layout.addRow("Начална снимка (Splash):", h_layout)
+        layout.addRow("", self.br_clear_splash)
+        
+        info = QLabel("Снимката трябва да е в формат JPG или PNG. Препоръчителен размер: 700x500.")
+        info.setStyleSheet("color: gray; font-style: italic;")
+        layout.addRow(info)
+        
+        self.tab_branding.setLayout(layout)
+
+    def browse_splash_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Изберете снимка", "", "Images (*.png *.jpg *.jpeg)")
+        if file_path:
+            self.br_splash_path.setText(file_path)
+
+    def init_templates_tab(self):
+        layout = QVBoxLayout()
+        
+        label = QLabel("Списък на шаблоните в системата (DOCX файлове):")
+        layout.addWidget(label)
+        
+        self.templates_list = QListWidget()
+        self.refresh_templates_list()
+        layout.addWidget(self.templates_list)
+        
+        btn_layout = QHBoxLayout()
+        btn_edit = QPushButton("✏️ Редактирай в Word")
+        btn_edit.clicked.connect(self.edit_selected_template)
+        btn_refresh = QPushButton("🔄 Обнови списъка")
+        btn_refresh.clicked.connect(self.refresh_templates_list)
+        
+        btn_layout.addWidget(btn_edit)
+        btn_layout.addWidget(btn_refresh)
+        layout.addLayout(btn_layout)
+        
+        self.tab_templates.setLayout(layout)
+
+    def refresh_templates_list(self):
+        self.templates_list.clear()
+        from path_utils import get_app_root
+        resources_dir = os.path.join(get_app_root(), "resources")
+        if os.path.exists(resources_dir):
+            files = [f for f in os.listdir(resources_dir) if f.endswith(".docx")]
+            self.templates_list.addItems(files)
+
+    def edit_selected_template(self):
+        item = self.templates_list.currentItem()
+        if not item:
+            QMessageBox.warning(self, "Внимание", "Моля, изберете шаблон!")
+            return
+            
+        from path_utils import get_app_root
+        file_path = os.path.join(get_app_root(), "resources", item.text())
+        if os.path.exists(file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+        else:
+            QMessageBox.critical(self, "Грешка", "Файлът не е намерен!")
+
+    def init_comm_tab(self):
+        layout = QVBoxLayout()
+        
+        # Email settings
+        email_grp = QGroupBox("Шаблон за Имейл")
+        e_form = QFormLayout()
+        self.comm_email_subject = QLineEdit()
+        self.comm_email_body = QTextEdit()
+        e_form.addRow("Тема:", self.comm_email_subject)
+        e_form.addRow("Текст:", self.comm_email_body)
+        email_grp.setLayout(e_form)
+        layout.addWidget(email_grp)
+        
+        # Viber settings
+        viber_grp = QGroupBox("Viber Известяване (Beta)")
+        v_form = QFormLayout()
+        self.comm_viber_token = QLineEdit()
+        self.comm_viber_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.comm_viber_receiver = QLineEdit()
+        self.comm_viber_receiver.setPlaceholderText("Receiver ID (User ID)")
+        self.comm_viber_template = QTextEdit()
+        
+        v_form.addRow("Viber Bot Token:", self.comm_viber_token)
+        v_form.addRow("Получател ID:", self.comm_viber_receiver)
+        
+        btn_test_viber = QPushButton("⚡ Тествай Viber връзката")
+        btn_test_viber.clicked.connect(self.test_viber_connection)
+        v_form.addRow("", btn_test_viber)
+        
+        v_form.addRow("Шаблон съобщение:", self.comm_viber_template)
+        
+        viber_grp.setLayout(v_form)
+        layout.addWidget(viber_grp)
+        
+        placeholders = QLabel("Достъпни променливи: {client}, {contract_num}, {expiry_date}, {model}")
+        placeholders.setStyleSheet("color: blue; font-weight: bold;")
+        layout.addWidget(placeholders)
+        
+        self.tab_comm.setLayout(layout)
+
+    def test_viber_connection(self):
+        token = self.comm_viber_token.text().strip()
+        receiver = self.comm_viber_receiver.text().strip()
+        
+        if not token:
+            QMessageBox.warning(self, "Внимание", "Моля, въведете Viber Bot Token!")
+            return
+            
+        from viber_manager import validate_viber_token, send_viber_message
+        
+        # 1. Validate Token
+        if validate_viber_token(token):
+            if receiver:
+                # 2. Try to send a test message if receiver is present
+                ok, msg = send_viber_message(token, receiver, "🔔 Тестово съобщение от Contracts App! Вашата Viber интеграция работи успешно.")
+                if ok:
+                    QMessageBox.information(self, "Viber Тест", "Връзката е успешна и е изпратено тестово съобщение!")
+                else:
+                    QMessageBox.warning(self, "Viber Тест", f"Токенът е валиден, но съобщението не беше изпратено:\n{msg}")
+            else:
+                QMessageBox.information(self, "Viber Тест", "Viber Bot Token-ът е валиден!")
+        else:
+            QMessageBox.critical(self, "Viber Тест", "Невалиден Viber Bot Token или липса на връзка с API сървъра.")
+
+    def init_dashboard_tab(self):
+        layout = QVBoxLayout()
+        grp = QGroupBox("Видимост на статистиките")
+        vbox = QVBoxLayout()
+        
+        self.dash_show_total = QCheckBox("Общо устройства")
+        self.dash_show_expiring = QCheckBox("Изтичащи договори")
+        self.dash_show_active = QCheckBox("Активни клиенти")
+        self.dash_show_recent = QCheckBox("Последно добавени")
+        
+        vbox.addWidget(self.dash_show_total)
+        vbox.addWidget(self.dash_show_expiring)
+        vbox.addWidget(self.dash_show_active)
+        vbox.addWidget(self.dash_show_recent)
+        
+        grp.setLayout(vbox)
+        layout.addWidget(grp)
+        layout.addStretch()
+        self.tab_dashboard.setLayout(layout)
 
     def init_cloud_backup_tab(self):
         layout = QFormLayout()
@@ -1995,13 +2232,30 @@ class SettingsDialog(QDialog):
                     self.email_14d = auto_data.get('email_14d_ahead', True)
                     self.email_30d = auto_data.get('email_30d_ahead', True)
                     
-                    # Load Cloud Settings
                     cloud_data = local_data.get('backup', {})
-                    self.cb_gdrive.setChecked(cloud_data.get('google_drive_enabled', False))
-                    self.cb_dropbox.setChecked(cloud_data.get('dropbox_enabled', False))
-                    self.cb_dropbox_token.setText(cloud_data.get('dropbox_token', ''))
-                    self.cb_folder_id.setText(cloud_data.get('google_folder_id', ''))
                     self.cb_interval.setCurrentText(cloud_data.get('interval', 'При затваряне'))
+                    self.cb_folder_id.setText(cloud_data.get('google_folder_id', ''))
+
+                    # Branding Settings
+                    branding = local_data.get('branding', {})
+                    self.br_app_title.setText(branding.get('app_title', ''))
+                    self.br_splash_path.setText(branding.get('splash_path', ''))
+
+                    # Communication Settings
+                    comm = local_data.get('communication', {})
+                    self.comm_email_subject.setText(comm.get('email_subject', ''))
+                    self.comm_email_body.setPlainText(comm.get('email_body', ''))
+                    self.comm_viber_token.setText(comm.get('viber_token', ''))
+                    self.comm_viber_receiver.setText(comm.get('viber_receiver', ''))
+                    self.comm_viber_template.setPlainText(comm.get('viber_template', ''))
+
+                    # Dashboard Settings
+                    dash = local_data.get('dashboard', {'show_total': True, 'show_expiring': True, 'show_active': True, 'show_recent': True})
+                    self.dash_show_total.setChecked(dash.get('show_total', True))
+                    self.dash_show_expiring.setChecked(dash.get('show_expiring', True))
+                    self.dash_show_active.setChecked(dash.get('show_active', True))
+                    self.dash_show_recent.setChecked(dash.get('show_recent', True))
+
             except Exception as e:
                 print(f"Error loading local settings: {e}")
 
@@ -2047,17 +2301,7 @@ class SettingsDialog(QDialog):
             
             local_data['server_url'] = url
             local_data['mode'] = mode
-            
-            # 3. Save Automation Settings
-            auto_data = local_data.get('automation', {})
-            auto_data['smtp_server'] = self.smtp_server.text()
-            auto_data['smtp_port'] = self.smtp_port.value()
-            auto_data['smtp_user'] = self.smtp_user.text()
-            auto_data['smtp_password'] = self.smtp_password.text()
-            auto_data['smtp_tls'] = self.smtp_tls.isChecked()
-            auto_data['report_recipient'] = self.report_recipient.text()
-            auto_data['report_day'] = self.report_day.value()
-            auto_data['auto_reports_enabled'] = self.auto_reports_enabled.isChecked()
+            local_data['autorun'] = autorun # Ensure autorun is saved
             
             # Save Cloud Backup Settings
             cloud_data = local_data.get('backup', {})
@@ -2066,10 +2310,32 @@ class SettingsDialog(QDialog):
             cloud_data['dropbox_token'] = self.cb_dropbox_token.text().strip()
             cloud_data['google_folder_id'] = self.cb_folder_id.text().strip()
             cloud_data['interval'] = self.cb_interval.currentText()
-            
-            local_data['automation'] = auto_data
             local_data['backup'] = cloud_data
-            local_data['autorun'] = autorun # Ensure autorun is saved
+
+            # Save Communication Settings
+            comm_data = local_data.get('communication', {})
+            comm_data['email_subject'] = self.comm_email_subject.text().strip()
+            comm_data['email_body'] = self.comm_email_body.toPlainText().strip()
+            comm_data['viber_token'] = self.comm_viber_token.text().strip()
+            comm_data['viber_receiver'] = self.comm_viber_receiver.text().strip()
+            comm_data['viber_template'] = self.comm_viber_template.toPlainText().strip()
+            local_data['communication'] = comm_data
+
+            # Save Branding Settings
+            branding_data = local_data.get('branding', {})
+            branding_data['app_title'] = self.br_app_title.text().strip()
+            branding_data['splash_path'] = self.br_splash_path.text().strip()
+            local_data['branding'] = branding_data
+
+            # Save Dashboard Settings
+            dash_data = local_data.get('dashboard', {})
+            dash_data['show_total'] = self.dash_show_total.isChecked()
+            dash_data['show_expiring'] = self.dash_show_expiring.isChecked()
+            dash_data['show_active'] = self.dash_show_active.isChecked()
+            dash_data['show_recent'] = self.dash_show_recent.isChecked()
+            local_data['dashboard'] = dash_data
+
+            # Save Automation & Email Settings
             auto_data = {
                 'smtp_server': self.smtp_server.text().strip(),
                 'smtp_port': self.smtp_port.value(),
@@ -2078,7 +2344,10 @@ class SettingsDialog(QDialog):
                 'smtp_tls': self.smtp_tls.isChecked(),
                 'report_recipient': self.report_recipient.text().strip(),
                 'report_day': self.report_day.value(),
-                'auto_reports_enabled': self.auto_reports_enabled.isChecked()
+                'auto_reports_enabled': self.auto_reports_enabled.isChecked(),
+                'email_7d_ahead': getattr(self, 'email_7d', True),
+                'email_14d_ahead': getattr(self, 'email_14d', True),
+                'email_30d_ahead': getattr(self, 'email_30d', True)
             }
             local_data['automation'] = auto_data
             
