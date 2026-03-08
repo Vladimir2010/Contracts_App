@@ -3,8 +3,8 @@ import os
 from typing import Optional, List, Dict, Tuple, Any
 from datetime import datetime
 import uuid
-from path_utils import get_app_root
-DB_PATH = os.path.join(get_app_root(), "data", "contracts.db")
+from path_utils import get_app_root, get_data_root
+DB_PATH = os.path.join(get_data_root(), "data", "contracts.db")
 
 
 def get_connection():
@@ -302,6 +302,24 @@ def init_db():
         ensure_column_exists("products", "is_deleted", "INTEGER DEFAULT 0")
         ensure_column_exists("products", "created_at", "TIMESTAMP", "datetime('now', 'localtime')")
         ensure_column_exists("products", "updated_at", "TIMESTAMP", "datetime('now', 'localtime')")
+        
+        # Invoices migrations
+        ensure_column_exists("invoices", "uuid", "TEXT")
+        ensure_column_exists("invoices", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("invoices", "is_deleted", "INTEGER DEFAULT 0")
+
+        # Invoice items migrations (simple sync: they follow parent invoice)
+        ensure_column_exists("invoice_items", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+
+        # Counterparties migrations
+        ensure_column_exists("counterparties", "uuid", "TEXT")
+        ensure_column_exists("counterparties", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("counterparties", "is_deleted", "INTEGER DEFAULT 0")
+
+        # Handover Protocols migrations
+        ensure_column_exists("handover_protocols", "uuid", "TEXT")
+        ensure_column_exists("handover_protocols", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
+        ensure_column_exists("handover_protocols", "is_deleted", "INTEGER DEFAULT 0")
 
         # Repair History migrations
         ensure_column_exists("repair_history", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
@@ -339,19 +357,20 @@ def init_db():
         
         con.commit()
         
-        # Generate UUIDs for products that don't have them
-        cur.execute("SELECT id FROM products WHERE uuid IS NULL")
-        rows = cur.fetchall()
-        for row in rows:
-            new_uuid = str(uuid.uuid4())
-            cur.execute("UPDATE products SET uuid = ? WHERE id = ?", (new_uuid, row[0]))
+        # Generate UUIDs for projects, counterparties, protocols that don't have them
+        for table in ["products", "invoices", "counterparties", "handover_protocols"]:
+            cur.execute(f"SELECT id FROM {table} WHERE uuid IS NULL")
+            rows = cur.fetchall()
+            for row in rows:
+                new_uuid = str(uuid.uuid4())
+                cur.execute(f"UPDATE {table} SET uuid = ? WHERE id = ?", (new_uuid, row[0]))
         con.commit()
         
         # Migrate settings from JSON if table is empty
         cur.execute("SELECT count(*) FROM global_settings")
         if cur.fetchone()[0] == 0:
-            from path_utils import get_app_root
-            settings_path = os.path.join(get_app_root(), "data", "settings.json")
+            from path_utils import get_app_root, get_data_root
+            settings_path = os.path.join(get_data_root(), "data", "settings.json")
             if os.path.exists(settings_path):
                 import json
                 try:
@@ -388,7 +407,7 @@ def add_client(data: Dict[str, Any]) -> int:
                 company_name, city, postal_code, address,
                 eik, vat_registered, mol, phone1, phone2,
                 last_modified
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('contract_number'),
             data.get('status'),
@@ -402,7 +421,8 @@ def add_client(data: Dict[str, Any]) -> int:
             data.get('vat_registered'),
             data.get('mol'),
             data.get('phone1'),
-            data.get('phone2')
+            data.get('phone2'),
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ))
         
         client_id = cur.lastrowid
@@ -471,10 +491,13 @@ def delete_client(client_id: int) -> bool:
     try:
         con = get_connection()
         cur = con.cursor()
-        # Check for devices first if needed, but here we just delete
-        cur.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Soft delete client
+        cur.execute("UPDATE clients SET is_deleted = 1, last_modified = ? WHERE id = ?", (now_str, client_id))
+        # Soft delete their devices too
+        cur.execute("UPDATE devices SET is_deleted = 1, last_modified = ? WHERE client_id = ?", (now_str, client_id))
         con.commit()
-        return cur.rowcount > 0
+        return True
     except Exception as e:
         print(f"Error deleting client: {e}")
         if con: con.rollback()
@@ -495,7 +518,7 @@ def get_client_by_contract(contract_number: str) -> Optional[Dict[str, Any]]:
                    company_name, city, postal_code, address,
                    eik, vat_registered, mol, phone1, phone2
             FROM clients
-            WHERE contract_number = ?
+            WHERE contract_number = ? AND is_deleted = 0
             LIMIT 1
         """, (contract_number,))
         
@@ -540,7 +563,7 @@ def get_devices_by_contract(contract_number: str) -> List[Dict[str, Any]]:
                    c.contract_expiry
             FROM devices d
             JOIN clients c ON c.id = d.client_id
-            WHERE c.contract_number = ?
+            WHERE c.contract_number = ? AND d.is_deleted = 0
         """, (contract_number,))
         
         rows = cur.fetchall()
@@ -574,7 +597,7 @@ def get_all_contract_numbers() -> List[str]:
     con = get_connection()
     cur = con.cursor()
     
-    cur.execute("SELECT contract_number FROM clients ORDER BY contract_number DESC")
+    cur.execute("SELECT contract_number FROM clients WHERE is_deleted = 0 ORDER BY contract_number DESC")
     rows = cur.fetchall()
     con.close()
     
@@ -589,7 +612,7 @@ def search_clients(query: str) -> List[Dict[str, Any]]:
     q = f"%{query.lower()}%"
     cur.execute("""
         SELECT * FROM clients 
-        WHERE LOWER(company_name) LIKE ? OR eik LIKE ? OR contract_number LIKE ?
+        WHERE (LOWER(company_name) LIKE ? OR eik LIKE ? OR contract_number LIKE ?) AND is_deleted = 0
         ORDER BY company_name ASC
     """, (q, q, q))
     
@@ -602,7 +625,7 @@ def get_all_clients() -> List[Dict[str, Any]]:
     con = get_connection()
     con.row_factory = sqlite3.Row
     cur = con.cursor()
-    cur.execute("SELECT * FROM clients ORDER BY company_name ASC")
+    cur.execute("SELECT * FROM clients WHERE is_deleted = 0 ORDER BY company_name ASC")
     rows = cur.fetchall()
     con.close()
     return [dict(r) for r in rows]
@@ -632,7 +655,7 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
             serial_number, fiscal_memory,
             nra_report_enabled, nra_report_month, nra_td, bim_model, bim_date,
             maintenance_price, last_renewed_at, last_modified
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', 'localtime'), ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         client_id,
         data.get('fdrid'),
@@ -651,6 +674,7 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
         data.get('bim_model'),
         data.get('bim_date'),
         data.get('maintenance_price', 0),
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ))
     
@@ -751,8 +775,9 @@ def delete_device(device_id: int) -> bool:
     """Delete device by ID"""
     con = get_connection()
     cur = con.cursor()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
-    cur.execute("DELETE FROM devices WHERE id = ?", (device_id,))
+    cur.execute("UPDATE devices SET is_deleted = 1, last_modified = ? WHERE id = ?", (now_str, device_id))
     deleted = cur.rowcount > 0
     
     con.commit()
@@ -838,6 +863,7 @@ def get_all_devices() -> List[Tuple]:
             d.nra_report_enabled  -- 24
         FROM devices d
         JOIN clients c ON c.id = d.client_id
+        WHERE d.is_deleted = 0
         ORDER BY CAST(c.contract_number AS INTEGER), c.contract_number, d.id
     """)
     
@@ -1727,7 +1753,7 @@ def restore_database_from_backup(backup_path):
     import zipfile
     import shutil
     import os
-    from path_utils import get_app_root
+    from path_utils import get_app_root, get_data_root
     
     app_root = get_app_root()
     db_path = os.path.join(app_root, "data", "contracts.db")
@@ -1756,7 +1782,7 @@ def reset_database():
     Clear all data from the database but preserve the super admin.
     """
     import os
-    from path_utils import get_app_root
+    from path_utils import get_app_root, get_data_root
     from super_admin_manager import load_super_admin
     
     app_root = get_app_root()
@@ -1877,10 +1903,12 @@ def add_counterparty(name: str, eik: str = '', address: str = '', mol: str = '',
     con = get_connection()
     cur = con.cursor()
     try:
+        new_uuid = str(uuid.uuid4())
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur.execute("""
-            INSERT INTO counterparties (name, eik, address, mol, phone)
-            VALUES (?, ?, ?, ?, ?)
-        """, (name, eik, address, mol, phone))
+            INSERT INTO counterparties (uuid, name, eik, address, mol, phone, last_modified)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (new_uuid, name, eik, address, mol, phone, now_str))
         con.commit()
         return cur.lastrowid
     except Exception as e:
@@ -1905,16 +1933,29 @@ def update_counterparty(cp_id: int, name: str, eik: str, address: str, mol: str,
     con = get_connection()
     cur = con.cursor()
     try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur.execute("""
             UPDATE counterparties 
             SET name = ?, eik = ?, address = ?, mol = ?, phone = ?, 
-                last_modified = datetime('now', 'localtime')
+                last_modified = ?
             WHERE id = ?
-        """, (name, eik, address, mol, phone, cp_id))
+        """, (name, eik, address, mol, phone, now_str, cp_id))
+        con.commit()
+        return True
+    finally:
+        con.close()
+
+def delete_counterparty(cp_id: int):
+    """Soft-delete a counterparty"""
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("UPDATE counterparties SET is_deleted = 1, last_modified = ? WHERE id = ?", (now_str, cp_id))
         con.commit()
         return True
     except Exception as e:
-        print(f"Error updating counterparty: {e}")
+        print(f"Error deleting counterparty: {e}")
         return False
     finally:
         con.close()
@@ -1926,12 +1967,15 @@ def add_handover_protocol(data: dict):
     con = get_connection()
     cur = con.cursor()
     try:
+        new_uuid = str(uuid.uuid4())
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cur.execute("""
             INSERT INTO handover_protocols (
-                protocol_date, technician_egn, capacity, counterparty_id,
-                description, notes, ref_number, docx_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                uuid, protocol_date, technician_egn, capacity, counterparty_id,
+                description, notes, ref_number, docx_path, last_modified
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
+            new_uuid,
             data.get('protocol_date'),
             data.get('technician_egn'),
             data.get('capacity'),
@@ -1939,12 +1983,42 @@ def add_handover_protocol(data: dict):
             data.get('description'),
             data.get('notes'),
             data.get('ref_number'),
-            data.get('docx_path')
+            data.get('docx_path'),
+            now_str
         ))
         con.commit()
         return cur.lastrowid
+    finally:
+        con.close()
+
+def get_all_handover_protocols():
+    """Get all non-deleted handover protocols"""
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        cur.execute("""
+            SELECT p.*, cp.name as counterparty_name 
+            FROM handover_protocols p
+            LEFT JOIN counterparties cp ON p.counterparty_id = cp.id
+            WHERE p.is_deleted = 0
+            ORDER BY protocol_date DESC
+        """)
+        columns = [column[0] for column in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+    finally:
+        con.close()
+
+def delete_handover_protocol(protocol_id: int):
+    """Soft-delete a handover protocol"""
+    con = get_connection()
+    cur = con.cursor()
+    try:
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cur.execute("UPDATE handover_protocols SET is_deleted = 1, last_modified = ? WHERE id = ?", (now_str, protocol_id))
+        con.commit()
+        return True
     except Exception as e:
-        print(f"Error adding protocol: {e}")
-        return None
+        print(f"Error deleting protocol: {e}")
+        return False
     finally:
         con.close()

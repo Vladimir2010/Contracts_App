@@ -20,6 +20,7 @@ a = Analysis(
         'uvicorn.lifespan', 'uvicorn.lifespan.on',
         'pydantic', 'pydantic.fields', 'pydantic.main',
         'starlette', 'starlette.routing', 'starlette.responses',
+        'google-generativeai', 'pytz'
     ],
     hookspath=[],
     hooksconfig={},

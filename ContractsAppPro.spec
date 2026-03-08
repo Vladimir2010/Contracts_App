@@ -1,60 +1,40 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-block_cipher = None
-
-# List of assets to bundle
-# Paths are relative to the root where PyInstaller is run
-added_files = [
-    ('Contracts_App_Pro/resources/*', 'resources'),
-    ('Contracts_App_Pro/data/*', 'data'),
-]
 
 a = Analysis(
-    ['Contracts_App_Pro/src/main.py'],
+    ['C:\\Users\\Dell\\PycharmProjects\\Contracts_App\\Contracts_App_Pro\\src\\main.py'],
     pathex=[],
     binaries=[],
-    datas=added_files,
-    hiddenimports=[
-        'win32com.client', 'pythoncom', 'requests', 'pandas', 'openpyxl', 
-        'docx', 'reportlab', 'PyQt6', 'sqlite3', 'json', 'hashlib', 'binascii'
-    ],
+    datas=[('Contracts_App_Pro/src', 'src'), ('Contracts_App_Pro/resources', 'resources')],
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'unittest', 'pydoc'],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
+    excludes=[],
     noarchive=False,
+    optimize=0,
 )
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries,
+    a.datas,
     [],
-    exclude_binaries=True,
     name='ContractsAppPro',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=[],
+    runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='Contracts_App_Pro/resources/vladpos_logo.png',
-)
-
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='ContractsAppPro',
+    version='C:\\Users\\Dell\\PycharmProjects\\Contracts_App\\version_info.txt',
+    icon=['C:\\Users\\Dell\\PycharmProjects\\Contracts_App\\Contracts_App_Pro\\resources\\vladpos_logo.ico'],
 )

@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 from datetime import datetime
 
 # Safe stdout/stderr for windowed apps (prevents crashes in --noconsole mode)
@@ -38,6 +39,7 @@ from database import (
     get_all_invoices, get_invoice_details, update_invoice_payment, delete_invoice,
     get_next_invoice_number, add_invoice
 )
+from export_pdf import generate_invoice_pdf
 from contract_generator import generate_service_contract, generate_nap_xml
 from dialogs import (
     AddDeviceDialog, EditDeviceDialog, AddToExistingContractDialog,
@@ -52,6 +54,12 @@ from database import log_action
 try:
     from server_thread import ServerThread
     from sync_manager import SyncManager
+    import inspect
+    if SyncManager:
+        print(f"DEBUG: SyncManager loaded from: {inspect.getfile(SyncManager)}")
+        # Check if perform_sync_iteration exists
+        if not hasattr(SyncManager, 'perform_sync_iteration'):
+            print("WARNING: SyncManager lacks perform_sync_iteration method!")
 except ImportError as e:
     print(f"Sync modules not available: {e}")
     ServerThread = None
@@ -93,7 +101,7 @@ class AutomationThread(QThread):
     def run(self):
         import time
         from datetime import datetime
-        from path_utils import get_app_root
+        from path_utils import get_app_root, get_data_root
         from database import get_expiring_contracts
         from export_word import export_to_word
         from email_manager import send_email_with_attachment
@@ -104,7 +112,7 @@ class AutomationThread(QThread):
         while True:
             try:
                 # 1. Load settings
-                settings_path = os.path.join(get_app_root(), "data", "settings.json")
+                settings_path = os.path.join(get_data_root(), "data", "settings.json")
                 if not os.path.exists(settings_path):
                     time.sleep(3600)
                     continue
@@ -139,7 +147,7 @@ class AutomationThread(QThread):
                         for row in data:
                             report_data.append((row[1], row[3], row[4], row[7], row[9], row[14], row[17], row[18], row[19], row[22]))
 
-                        report_dir = os.path.join(get_app_root(), "data", "reports")
+                        report_dir = os.path.join(get_data_root(), "data", "reports")
                         os.makedirs(report_dir, exist_ok=True)
                         report_file = os.path.join(report_dir, f"Expiring_Contracts_{current_month}.docx")
                         
@@ -154,18 +162,28 @@ class AutomationThread(QThread):
                                 'use_tls': auto_cfg.get('smtp_tls', True)
                             }
                             
-                            recipient = auto_cfg.get('report_recipient')
-                            subject = f"Месечна справка: {title}"
-                            body = f"Здравейте,\n\nВ приложение ще намерите справка за договорите, чиято валидност изтича през {exp_month:02d}.{exp_year}.\n\nПоздрави,\nContracts App Automation"
+                            recipient_str = auto_cfg.get('report_recipient', '')
+                            all_recipients = [r.strip() for r in recipient_str.split(',') if r.strip()]
                             
-                            if send_email_with_attachment(smtp_cfg, recipient, subject, body, report_file):
-                                print("Monthly report sent successfully!")
-                                settings['automation']['last_report_month'] = current_month
-                                with open(settings_path, 'w', encoding='utf-8') as f:
-                                    json.dump(settings, f, ensure_ascii=False, indent=2)
-                                self.status_signal.emit("Месечният отчет бе изпратен успешно.")
+                            if all_recipients:
+                                subject = f"Месечна справка: {title}"
+                                body = f"Здравейте,\n\nВ приложение ще намерите справка за договорите, чиято валидност изтича през {exp_month:02d}.{exp_year}.\n\nПоздрави,\nContracts App Automation"
+                                
+                                success = False
+                                for recipient in all_recipients:
+                                    if send_email_with_attachment(smtp_cfg, recipient, subject, body, report_file):
+                                        print(f"Monthly report sent successfully to {recipient}!")
+                                        success = True
+                                
+                                if success:
+                                    settings['automation']['last_report_month'] = current_month
+                                    with open(settings_path, 'w', encoding='utf-8') as f:
+                                        json.dump(settings, f, ensure_ascii=False, indent=2)
+                                    self.status_signal.emit("Месечният отчет бе изпратен.")
+                                else:
+                                    self.status_signal.emit("Грешка при изпращане на имейл отчет.")
                             else:
-                                self.status_signal.emit("Грешка при изпращане на имейл отчет.")
+                                print("No recipients configured for monthly report.")
                         else:
                             print("Failed to generate report.")
                     else:
@@ -219,10 +237,14 @@ class AutomationThread(QThread):
                                 subject = email_tpl_subject.replace("{days}", str(days))
                                 body = email_tpl_body.replace("{days}", str(days)).replace("{list}", clients_list)
                                 
+                                recipient_str = auto_cfg.get('report_recipient', '')
+                                all_recipients = [r.strip() for r in recipient_str.split(',') if r.strip()]
+                                
                                 from email_manager import send_email_with_attachment
-                                if send_email_with_attachment(smtp_cfg, recipient, subject, body):
-                                    print(f"Sent {days} day alert to {recipient}")
-                                    any_alerts_sent = True
+                                for recipient in all_recipients:
+                                    if send_email_with_attachment(smtp_cfg, recipient, subject, body):
+                                        print(f"Sent {days} day alert to {recipient}")
+                                        any_alerts_sent = True
                                 
                                 # 2. Viber Alert
                                 if viber_token and viber_receiver:
@@ -291,11 +313,11 @@ class SplashScreen(QSplashScreen):
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
         
         # Load custom branding from settings.json
-        from path_utils import get_app_root
+        from path_utils import get_app_root, get_data_root
         branding_title = "Регистър на\nфискални устройства"
         logo_path = get_resource_path('logo-d-d.jpg')
         
-        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        settings_path = os.path.join(get_data_root(), "data", "settings.json")
         if os.path.exists(settings_path):
             try:
                 import json
@@ -333,24 +355,35 @@ class SplashScreen(QSplashScreen):
         self.progressBar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.progressBar.setStyleSheet("""
             QProgressBar {
-                background-color: #ecf0f1;
+                background-color: #f0f2f5;
                 color: #2c3e50;
-                border: 1px solid #bdc3c7;
+                border: 1px solid #d1d9e6;
                 border-radius: 12px;
                 text-align: center;
                 font-weight: bold;
             }
             QProgressBar::chunk {
-                background-color: #3498db;
+                background-color: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #3498db, stop:1 #2ecc71);
                 border-radius: 10px;
             }
         """)
         self.progressBar.setValue(0)
 
     def setProgress(self, value):
-        self.progressBar.setValue(value)
-        # Force UI update
-        QApplication.processEvents()
+        """Smoothly increment progress bar to target value"""
+        current_value = self.progressBar.value()
+        if value > current_value:
+            # Determine step size and speed based on the gap
+            step = 1
+            delay = 0.015
+            
+            for v in range(current_value + step, value + 1, step):
+                self.progressBar.setValue(v)
+                time.sleep(delay)
+                QApplication.processEvents()
+        else:
+            self.progressBar.setValue(value)
+            QApplication.processEvents()
 
 
 class MainWindow(QMainWindow):
@@ -696,7 +729,9 @@ class MainWindow(QMainWindow):
         invoice_id = int(self.invoice_table.item(row, 0).text())
         
         menu = QMenu()
-        view_act = menu.addAction("👁️ Преглед")
+        view_act = menu.addAction("👁️ Преглед/Редакция")
+        print_act = menu.addAction("🖨️ Издай (Печат)")
+        menu.addSeparator()
         pay_act = menu.addAction("💰 Маркирай като платена")
         unpay_act = menu.addAction("🔄 Маркирай като неплатена")
         menu.addSeparator()
@@ -705,8 +740,9 @@ class MainWindow(QMainWindow):
         action = menu.exec(self.invoice_table.viewport().mapToGlobal(pos))
         
         if action == view_act:
-            # self.view_invoice_action()
-            pass
+            self.view_invoice_action()
+        elif action == print_act:
+            self.print_invoice_action(invoice_id)
         elif action == pay_act:
             if update_invoice_payment(invoice_id, 'PAID', True):
                 self.refresh_invoices()
@@ -733,6 +769,37 @@ class MainWindow(QMainWindow):
             if dialog.exec():
                 self.refresh_invoices()
 
+    def print_invoice_action(self, invoice_id):
+        """Fetch invoice, generate PDF and open it directly"""
+        invoice_details = get_invoice_details(invoice_id)
+        if not invoice_details:
+            QMessageBox.warning(self, "Грешка", "Не бе открита информация за фактурата.")
+            return
+
+        # Prepare data for PDF (Seller info from settings)
+        from database import get_setting
+        invoice_details['seller'] = {
+            'name': get_setting('name', 'Д и Д Фискал Системс ЕООД'),
+            'eik': get_setting('eik', '205634567'),
+            'vat': get_setting('vat', 'BG205634567'),
+            'city': get_setting('city', 'София'),
+            'address': get_setting('address', 'гр. София, бул. България №1'),
+            'mol': get_setting('mol', 'Александър Петров')
+        }
+        
+        prefix = "Faktura" if invoice_details['type'] == 'INV' else "Proforma"
+        default_name = f"{prefix}_{invoice_details['number']}.pdf"
+        
+        save_path = os.path.join(os.path.expanduser("~"), "Documents", "ContractsApp", "Invoices")
+        os.makedirs(save_path, exist_ok=True)
+        file_path = os.path.join(save_path, default_name)
+        
+        if generate_invoice_pdf(invoice_details, file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+            log_action(self.current_user['id'], self.current_user['username'], "PRINT_INVOICE", f"Printed document {invoice_details['number']}")
+        else:
+            QMessageBox.critical(self, "Грешка", "Грешка при генериране на PDF!")
+
     def add_invoice_action(self):
         dialog = InvoiceDialog(self)
         if dialog.exec():
@@ -752,8 +819,8 @@ class MainWindow(QMainWindow):
             self.card_revenue.findChild(QLabel, "value_label").setText(f"{stats['monthly_revenue']:.2f} лв.")
 
             # Apply visibility from settings
-            from path_utils import get_app_root
-            settings_path = os.path.join(get_app_root(), "data", "settings.json")
+            from path_utils import get_app_root, get_data_root
+            settings_path = os.path.join(get_data_root(), "data", "settings.json")
             if os.path.exists(settings_path):
                 import json
                 try:
@@ -781,8 +848,8 @@ class MainWindow(QMainWindow):
 
     def apply_branding(self):
         """Load custom title from settings"""
-        from path_utils import get_app_root
-        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        from path_utils import get_app_root, get_data_root
+        settings_path = os.path.join(get_data_root(), "data", "settings.json")
         if os.path.exists(settings_path):
             try:
                 import json
@@ -794,7 +861,13 @@ class MainWindow(QMainWindow):
             except: pass
 
     def on_tab_changed(self, index):
-        if index == 2: # Statistics tab
+        if index == 0:
+            self.refresh_table()
+        elif index == 1:
+            self.refresh_products()
+        elif index == 2:
+            self.refresh_invoices()
+        elif index == 3:
             self.refresh_stats()
 
     def refresh_products(self):
@@ -1104,7 +1177,7 @@ class MainWindow(QMainWindow):
         """Show About dialog"""
         QMessageBox.about(self, "За програмата", 
             """<h3>Contracts App Professional</h3>
-            <p><b>Версия:</b> 1.0.9</p>
+            <p><b>Версия:</b> 1.1.2</p>
             <p>Професионална система за управление на договори и фискални устройства.</p>
             <p>Този софтуер е предназначен за автоматизиране на процесите по регистрация, 
             дерегистрация и поддръжка на ФУ.</p>
@@ -1264,15 +1337,27 @@ class MainWindow(QMainWindow):
         self.statusBar.showMessage(f"Намерени {len(data)} записа")
     
     def clear_filters(self):
-        """Clear all filters and reload"""
-        self.f_company.clear()
-        self.f_eik.clear()
-        self.f_contract.clear()
-        self.f_phone.clear()
-        self.f_address.clear()
-        self.f_serial.clear()
-        self.f_euro.setChecked(False)
-        self.refresh_table()
+        """Clear all filters and reload current tab"""
+        idx = self.tabs.currentIndex()
+        if idx == 0:
+            self.f_company.clear()
+            self.f_eik.clear()
+            self.f_contract.clear()
+            self.f_phone.clear()
+            self.f_address.clear()
+            self.f_serial.clear()
+            self.f_euro.setChecked(False)
+            self.refresh_table()
+        elif idx == 1:
+            self.product_search.clear()
+            self.refresh_products()
+        elif idx == 2:
+            self.invoice_search.clear()
+            self.refresh_invoices()
+        elif idx == 3:
+            self.refresh_stats()
+        
+        self.statusBar.showMessage("Данните бяха обновени успешно", 3000)
     
     def add_device(self):
         """Open add device dialog"""
@@ -1509,8 +1594,8 @@ class MainWindow(QMainWindow):
         client_eik = clean_numeric(full_data.get('eik', ''))
         fdrid = clean_numeric(full_data.get('fdrid', ''))
 
-        from path_utils import get_app_root
-        output_dir = os.path.join(get_app_root(), "Generated")
+        from path_utils import get_app_root, get_data_root
+        output_dir = os.path.join(get_data_root(), "Generated")
         os.makedirs(output_dir, exist_ok=True)
 
         try:
@@ -1553,8 +1638,8 @@ class MainWindow(QMainWindow):
             from contract_generator import generate_deregistration_protocol
             try:
                 template = "DeregProtocol_DT123456.docx"
-                from path_utils import get_app_root
-                output_dir = os.path.join(get_app_root(), "Generated")
+                from path_utils import get_app_root, get_data_root
+                output_dir = os.path.join(get_data_root(), "Generated")
                 if not os.path.exists(output_dir): os.makedirs(output_dir)
                 
                 out_path = generate_deregistration_protocol(data, template, output_dir)
@@ -1583,8 +1668,8 @@ class MainWindow(QMainWindow):
     def run_nra_report_generation(self):
         """Logic to generate the fiskal.ser file using all flagged devices"""
         # Load Settings (Service Data)
-        from path_utils import get_app_root
-        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        from path_utils import get_app_root, get_data_root
+        settings_path = os.path.join(get_data_root(), "data", "settings.json")
         if not os.path.exists(settings_path):
             QMessageBox.warning(self, "Внимание", "Моля, първо попълнете данните за сервизния техник в Настройки!")
             return
@@ -1604,7 +1689,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Информация", "Няма устройства, маркирани за включване в отчета.")
             return
 
-        output_dir = os.path.join(get_app_root(), "Generated")
+        output_dir = os.path.join(get_data_root(), "Generated")
         os.makedirs(output_dir, exist_ok=True)
 
         from contract_generator import generate_fiskal_ser
@@ -1847,6 +1932,10 @@ class MainWindow(QMainWindow):
     def add_sync_action(self):
         """Add manual sync/refresh button to toolbar"""
         if hasattr(self, 'toolbar'):
+            # Remove existing sync action if present to prevent duplicates
+            if hasattr(self, 'sync_action') and self.sync_action in self.toolbar.actions():
+                self.toolbar.removeAction(self.sync_action)
+                
             mode = self.sync_manager.mode if self.sync_manager else "client"
             
             if mode == "server":
@@ -1916,9 +2005,31 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         """Open settings dialog"""
         dialog = SettingsDialog(self)
+        old_mode = self.sync_manager.mode if self.sync_manager else None
+        
         if dialog.exec():
-            # Settings were saved, may need to restart for network changes
-            pass
+            # Refresh sync manager if it exists
+            if hasattr(self, 'sync_manager') and self.sync_manager:
+                print("DEBUG: Reloading SyncManager settings...")
+                self.sync_manager.reload_settings()
+                
+                # Check if mode changed (Server <-> Client)
+                new_mode = self.sync_manager.mode
+                if old_mode != new_mode:
+                    print(f"DEBUG: Sync mode changed from {old_mode} to {new_mode}. Re-initializing UI.")
+                    if new_mode == "server":
+                        self.start_server_mode()
+                    else:
+                        self.start_client_mode()
+                    # Rebuild tray icon to update menu actions
+                    self.init_tray_icon()
+                
+                self.statusBar.showMessage(f"Настройките са за заредени. Адрес: {self.sync_manager.server_url}", 5000)
+                # Update sync button label/action on toolbar
+                self.add_sync_action()
+            else:
+                # If sync manager was not initialized (e.g. error at startup), try now
+                self.init_sync_system()
 
     def perform_sync(self):
         """Manually trigger a sync iteration"""
@@ -1944,6 +2055,9 @@ class MainWindow(QMainWindow):
             
     def init_tray_icon(self):
         """Initialize the system tray icon and menu"""
+        if hasattr(self, 'tray_icon') and self.tray_icon:
+            self.tray_icon.hide()
+            
         self.tray_icon = QSystemTrayIcon(self)
         
         # Use existing logo or standard icon
@@ -1980,6 +2094,8 @@ class MainWindow(QMainWindow):
         self.tray_icon.setContextMenu(tray_menu)
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.show()
+        # Store menu reference for possible updates
+        self.tray_menu = tray_menu
 
     def on_tray_icon_activated(self, reason):
         try:
@@ -2125,11 +2241,13 @@ def main():
     app.processEvents()
     
     # Progress simulation
-    splash.setProgress(20)
+    splash.setProgress(15)
     
     # Initialize DB (migrations etc)
+    splash.setProgress(30)
     init_db()
-    splash.setProgress(80)
+    
+    splash.setProgress(60)
     
     # Run Backup BEFORE showing UI
     try:

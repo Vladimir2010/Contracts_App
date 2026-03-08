@@ -2,9 +2,10 @@ from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QMessageBox, QDateEdit, QCheckBox, QLabel, QTabWidget, QWidget,
     QFileDialog, QSpinBox, QDoubleSpinBox, QCompleter, QTableWidget, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QTextEdit, QGroupBox, QGridLayout, QListWidget
+    QHeaderView, QAbstractItemView, QTextEdit, QGroupBox, QGridLayout, QListWidget,
+    QProgressDialog
 )
-from PyQt6.QtCore import QDate, Qt, QUrl
+from PyQt6.QtCore import QDate, Qt, QUrl, QThread, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
 from vat_check import check_vat
 from database import (
@@ -39,6 +40,24 @@ def get_user_auth(obj):
         if not isinstance(parent, QWidget): break
         parent = parent.parent()
     return None, "SYSTEM"
+
+
+class VATWorker(QThread):
+    """Background worker for EIK/VAT lookup with AI analysis"""
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(self, eik):
+        super().__init__()
+        self.eik = eik
+
+    def run(self):
+        try:
+            # check_vat is the main logic in vat_check.py
+            result = check_vat(self.eik)
+            self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class AddDeviceDialog(QDialog):
@@ -273,13 +292,13 @@ class AddDeviceDialog(QDialog):
                     pass
     
     def check_vat_status(self):
-        """Check VAT registration status online and fill data"""
+        """Check VAT registration status online and fill data (Threaded)"""
         eik = self.eik.text().strip()
         if not eik:
             QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК първо.")
             return
 
-        # Clear existing company fields before new check
+        # Clear existing company fields
         self.company_name.clear()
         self.address.clear()
         self.mol.clear()
@@ -287,16 +306,26 @@ class AddDeviceDialog(QDialog):
         self.postal_code.clear()
         self.vat_registered.setCurrentText("не")
         
-        result = check_vat(eik)
+        # Show progress
+        self.progress = QProgressDialog("🔍 Проверка в регистър и AI анализ...", "Отказ", 0, 0, self)
+        self.progress.setWindowTitle("Моля изчакайте")
+        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress.show()
         
+        self.worker = VATWorker(eik)
+        self.worker.finished.connect(self.on_vat_finished)
+        self.worker.error.connect(self.on_vat_error)
+        self.worker.start()
+
+    def on_vat_error(self, err_msg):
+        self.progress.close()
+        QMessageBox.critical(self, "Грешка", f"Грешка при проверка:\n{err_msg}")
+
+    def on_vat_finished(self, result):
+        self.progress.close()
         if result is None:
-            QMessageBox.warning(
-                self,
-                "Няма връзка",
-                "Няма интернет връзка или услугата е недостъпна.\nМоля, въведете ръчно."
-            )
+            QMessageBox.warning(self, "Няма връзка", "Няма интернет връзка или услугата е недостъпна.")
         else:
-            # Populate fields if we found ANY info (even if not VAT registered)
             if result.get("name"):
                 self.company_name.setText(result.get("name", ""))
                 self.address.setText(result.get("address", ""))
@@ -311,14 +340,7 @@ class AddDeviceDialog(QDialog):
                     self.vat_registered.setCurrentText("не")
                     status_text = "НЕ"
                 
-                QMessageBox.information(
-                    self, 
-                    "Успех", 
-                    f"ЗДДС регистрация: {status_text}\n"
-                    f"Фирма: {result.get('name')}\n"
-                    f"МОЛ: {result.get('mol')}\n"
-                    f"Град: {result.get('city')} {result.get('postal_code')}"
-                )
+                QMessageBox.information(self, "Успех", f"ЗДДС регистрация: {status_text}\nФирма: {result.get('name')}")
             else:
                 self.vat_registered.setCurrentText("не")
                 QMessageBox.information(self, "Резултат", "Не бе открита информация за този ЕИК.")
@@ -327,7 +349,7 @@ class AddDeviceDialog(QDialog):
         """Setup City and Postal Code autocomplete"""
         try:
             from path_utils import get_resource_path
-            flat_file = get_resource_path("LD/bg_places_flat.json")
+            flat_file = get_resource_path("bg_places_flat.json")
             if not os.path.exists(flat_file):
                 return
                 
@@ -394,6 +416,11 @@ class AddDeviceDialog(QDialog):
         
         if not self.company_name.text().strip():
             QMessageBox.warning(self, "Грешка", "Име на фирма е задължително!")
+            return
+        
+        if not self.serial_number.text().strip():
+            QMessageBox.warning(self, "Грешка", "Сериен номер е задължителен!")
+            self.serial_number.setFocus()
             return
         
         try:
@@ -625,6 +652,11 @@ class AddToExistingContractDialog(QDialog):
         """Save new device to existing contract"""
         if not self.current_client_id:
             QMessageBox.warning(self, "Грешка", "Моля, изберете договор!")
+            return
+        
+        if not self.serial_number.text().strip():
+            QMessageBox.warning(self, "Грешка", "Сериен номер е задължителен!")
+            self.serial_number.setFocus()
             return
         
         try:
@@ -882,30 +914,30 @@ class EditDeviceDialog(QDialog):
                     pass
     
     def check_vat_status(self):
-        """Check VAT registration status online and fill data"""
+        """Check VAT registration status online and fill data (Threaded)"""
         eik = self.eik.text().strip()
         if not eik:
             QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК първо.")
             return
 
-        # Clear existing company fields before new check
-        self.company_name.clear()
-        self.address.clear()
-        self.mol.clear()
-        self.city.clear()
-        self.postal_code.clear()
-        self.vat_registered.setCurrentText("не")
-        
-        result = check_vat(eik)
-        
-        if result is None:
-            QMessageBox.warning(
-                self,
-                "Няма връзка",
-                "Няма интернет връзка или услугата е недостъпна.\nМоля, въведете ръчно."
-            )
-        else:
-            # Populate fields if we found ANY info
+        # Show progress
+        self.progress = QProgressDialog("🔍 Проверка в регистър и AI анализ...", "Отказ", 0, 0, self)
+        self.progress.setWindowTitle("Моля изчакайте")
+        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress.show()
+
+        self.worker = VATWorker(eik)
+        self.worker.finished.connect(self.on_vat_finished)
+        self.worker.error.connect(self.on_vat_error)
+        self.worker.start()
+
+    def on_vat_error(self, err_msg):
+        self.progress.close()
+        QMessageBox.critical(self, "Грешка", f"Грешка при проверка:\n{err_msg}")
+
+    def on_vat_finished(self, result):
+        self.progress.close()
+        if result:
             if result.get("name"):
                 self.company_name.setText(result.get("name", ""))
                 self.address.setText(result.get("address", ""))
@@ -920,23 +952,17 @@ class EditDeviceDialog(QDialog):
                     self.vat_registered.setCurrentText("не")
                     status_text = "НЕ"
                 
-                QMessageBox.information(
-                    self, 
-                    "Успех", 
-                    f"ЗДДС регистрация: {status_text}\n"
-                    f"Фирма: {result.get('name')}\n"
-                    f"МОЛ: {result.get('mol')}\n"
-                    f"Град: {result.get('city')} {result.get('postal_code')}"
-                )
+                QMessageBox.information(self, "Успех", f"ЗДДС регистрация: {status_text}\nФирма: {result.get('name')}")
             else:
-                self.vat_registered.setCurrentText("не")
                 QMessageBox.information(self, "Резултат", "Не бе открита информация за този ЕИК.")
+        else:
+            QMessageBox.warning(self, "Няма връзка", "Няма интернет връзка или услугата е недостъпна.")
 
     def setup_autocomplete(self):
         """Setup City and Postal Code autocomplete"""
         try:
             from path_utils import get_resource_path
-            flat_file = get_resource_path("LD/bg_places_flat.json")
+            flat_file = get_resource_path("bg_places_flat.json")
             if not os.path.exists(flat_file): return
             with open(flat_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -979,6 +1005,11 @@ class EditDeviceDialog(QDialog):
         
         if not self.company_name.text().strip():
             QMessageBox.warning(self, "Грешка", "Име на фирма е задължително!")
+            return
+            
+        if not self.serial_number.text().strip():
+            QMessageBox.warning(self, "Грешка", "Сериен номер е задължителен!")
+            self.serial_number.setFocus()
             return
         
         try:
@@ -1176,18 +1207,18 @@ class ExpiringContractsDialog(QDialog):
 
     def send_email_report(self):
         """Send report via Email"""
-        from path_utils import get_app_root
+        from path_utils import get_app_root, get_data_root
         import json
         
         # 1. Generate Temp PDF
-        temp_pdf = os.path.join(get_app_root(), "temp_expiring_report.pdf")
+        temp_pdf = os.path.join(get_data_root(), "temp_expiring_report.pdf")
         title = f"Справка за изтичащи договори - {self.month_spin.value():02d}.{self.year_spin.value()}"
         if not export_to_pdf(self.current_data, self.headers, temp_pdf, title):
             QMessageBox.critical(self, "Грешка", "Грешка при генериране на PDF файл за прикачване!")
             return
 
         # 2. Load SMTP settings
-        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        settings_path = os.path.join(get_data_root(), "data", "settings.json")
         if not os.path.exists(settings_path):
             QMessageBox.warning(self, "Внимание", "Не са намерени настройки за имейл (Automation)!")
             return
@@ -1204,18 +1235,40 @@ class ExpiringContractsDialog(QDialog):
                     'password': auto_cfg.get('smtp_password'),
                     'use_tls': auto_cfg.get('smtp_tls', True)
                 }
-                recipient = auto_cfg.get('report_recipient')
-                
-                if not smtp_cfg['server'] or not recipient:
+                recipient_str = auto_cfg.get('report_recipient', '')
+                if not smtp_cfg['server'] or not recipient_str:
                     QMessageBox.warning(self, "Внимание", "Моля настройте SMTP сървър и получател в Настройки -> Автоматизация!")
                     return
 
-                # 3. Send Email
+                # Parse recipients
+                all_recipients = [r.strip() for r in recipient_str.split(',') if r.strip()]
+                if not all_recipients:
+                    QMessageBox.warning(self, "Внимание", "Не са намерени валидни имейл адреси!")
+                    return
+                
+                selected_recipients = all_recipients
+                if len(all_recipients) > 1:
+                    sel_dlg = RecipientSelectionDialog(all_recipients, self)
+                    if sel_dlg.exec() == QDialog.DialogCode.Accepted:
+                        selected_recipients = sel_dlg.get_selected_emails()
+                        if not selected_recipients:
+                            return # Cancelled or nothing selected
+                    else:
+                        return # Cancelled
+                
+                # 3. Send Email(s)
                 subject = f"Ръчна справка: {title}"
                 body = f"Здравейте,\n\nВ приложение изпращам ръчно генерирана справка за изтичащи договори през {self.month_spin.value():02d}.{self.year_spin.value()}.\n\nПоздрави,\nContracts App Professional"
                 
-                if send_email_with_attachment(smtp_cfg, recipient, subject, body, temp_pdf):
-                    QMessageBox.information(self, "Успех", f"Справката беше изпратена успешно на {recipient}!")
+                success_count = 0
+                for recipient in selected_recipients:
+                    if send_email_with_attachment(smtp_cfg, recipient, subject, body, temp_pdf):
+                        success_count += 1
+                
+                if success_count == len(selected_recipients):
+                    QMessageBox.information(self, "Успех", f"Справката беше изпратена успешно на {len(selected_recipients)} получателя!")
+                elif success_count > 0:
+                    QMessageBox.warning(self, "Частичен успех", f"Справката беше изпратена успешно на {success_count} от {len(selected_recipients)} получателя.")
                 else:
                     QMessageBox.critical(self, "Грешка", "Неуспешно изпращане на имейл. Проверете настройките.")
                     
@@ -1226,6 +1279,38 @@ class ExpiringContractsDialog(QDialog):
             if os.path.exists(temp_pdf):
                 try: os.remove(temp_pdf)
                 except: pass
+
+class RecipientSelectionDialog(QDialog):
+    """Dialog for selecting which emails to send a report to"""
+    def __init__(self, email_list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Избор на получатели")
+        self.setMinimumSize(300, 200)
+        
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Изберете имейли, на които да се изпрати справката:"))
+        
+        self.checkboxes = []
+        for email in email_list:
+            cb = QCheckBox(email.strip())
+            cb.setChecked(True)
+            self.checkboxes.append(cb)
+            layout.addWidget(cb)
+            
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("Изпрати")
+        btn_ok.clicked.connect(self.accept)
+        btn_cancel = QPushButton("Отказ")
+        btn_cancel.clicked.connect(self.reject)
+        
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+    def get_selected_emails(self):
+        return [cb.text() for cb in self.checkboxes if cb.isChecked()]
 
 class DeregistrationDialog(QDialog):
     def __init__(self, parent=None, device_data=None):
@@ -1710,10 +1795,10 @@ class SettingsDialog(QDialog):
         self.init_network_tab()
         self.tabs.addTab(self.tab_network, "Мрежа")
 
-        # Tab 7: Automation & Email (New)
+        # Tab 7: Automation & AI (New)
         self.tab_auto = QWidget()
         self.init_automation_tab()
-        self.tabs.addTab(self.tab_auto, "⚙️ Автоматизация")
+        self.tabs.addTab(self.tab_auto, "⚙️ Автоматизация & AI")
         
         # Tab 8: Cloud Backup (New)
         self.tab_cloud = QWidget()
@@ -1765,6 +1850,9 @@ class SettingsDialog(QDialog):
         self.s_mol = QLineEdit()
         self.s_phone1 = QLineEdit()
         self.s_phone2 = QLineEdit()
+        self.s_gemini_key = QLineEdit()
+        self.s_gemini_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.s_gemini_key.setPlaceholderText("AIzaSy...")
         
         # Check Service EIK Button (also checks VAT via VIES)
         check_btn = QPushButton("Провери ЕИК и ДДС")
@@ -1793,29 +1881,40 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК!")
             return
             
-        from vat_check import check_vat
-        
-        try:
-            data = check_vat(eik)
-            if data:
-                self.s_name.setText(data.get('name', ''))
-                self.s_addr.setText(data.get('address', ''))
-                self.s_mol.setText(data.get('mol', ''))
-                self.s_city.setText(data.get('city', ''))
-                self.s_post.setText(data.get('postal_code', ''))
-                
-                if data.get('valid'):
-                    # Construct VAT number (BG + EIK)
-                    self.s_vat.setText(f"BG{eik}")
-                    self.s_vat_reg.setChecked(True)
-                    QMessageBox.information(self, "Успех", "Данните са заредени успешно!\nФирмата е регистрирана по ДДС.")
-                else:
-                    self.s_vat_reg.setChecked(False)
-                    QMessageBox.information(self, "Успех", "Данните са заредени успешно!\nФирмата НЕ е регистрирана по ДДС.")
+        # Show progress
+        self.progress = QProgressDialog("🔍 Проверка в регистър и AI анализ...", "Отказ", 0, 0, self)
+        self.progress.setWindowTitle("Моля изчакайте")
+        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress.show()
+
+        self.worker = VATWorker(eik)
+        self.worker.finished.connect(self.on_service_vat_finished)
+        self.worker.error.connect(self.on_vat_error) # Reuse the error handler if defined or define new
+        self.worker.start()
+
+    def on_vat_error(self, err_msg):
+        self.progress.close()
+        QMessageBox.critical(self, "Грешка", f"Грешка при проверка:\n{err_msg}")
+
+    def on_service_vat_finished(self, data):
+        self.progress.close()
+        if data:
+            self.s_name.setText(data.get('name', ''))
+            self.s_addr.setText(data.get('address', ''))
+            self.s_mol.setText(data.get('mol', ''))
+            self.s_city.setText(data.get('city', ''))
+            self.s_post.setText(data.get('postal_code', ''))
+            
+            if data.get('valid'):
+                # Construct VAT number (BG + EIK)
+                self.s_vat.setText(f"BG{self.s_eik.text().strip()}")
+                self.s_vat_reg.setChecked(True)
+                QMessageBox.information(self, "Успех", "Данните са заредени успешно!\nФирмата е регистрирана по ДДС.")
             else:
-                QMessageBox.warning(self, "Грешка", "Не са намерени данни за този ЕИК.")
-        except Exception as e:
-            QMessageBox.critical(self, "Грешка", f"Грешка при проверка:\n{str(e)}")
+                self.s_vat_reg.setChecked(False)
+                QMessageBox.information(self, "Успех", "Данните са заредени успешно!\nФирмата НЕ е регистрирана по ДДС.")
+        else:
+            QMessageBox.warning(self, "Грешка", "Не са намерени данни за този ЕИК.")
 
     def init_tech_tab(self):
         layout = QFormLayout()
@@ -1911,7 +2010,7 @@ class SettingsDialog(QDialog):
 
     def refresh_templates_list(self):
         self.templates_list.clear()
-        from path_utils import get_app_root
+        from path_utils import get_app_root, get_data_root
         resources_dir = os.path.join(get_app_root(), "resources")
         if os.path.exists(resources_dir):
             files = [f for f in os.listdir(resources_dir) if f.endswith(".docx")]
@@ -1923,7 +2022,7 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, "Внимание", "Моля, изберете шаблон!")
             return
             
-        from path_utils import get_app_root
+        from path_utils import get_app_root, get_data_root
         file_path = os.path.join(get_app_root(), "resources", item.text())
         if os.path.exists(file_path):
             QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
@@ -2207,8 +2306,8 @@ class SettingsDialog(QDialog):
         self.s_tech_egn.setText(get_setting('tech_egn', ''))
 
         # Load Local Settings from JSON
-        from path_utils import get_app_root
-        settings_path = os.path.join(get_app_root(), "data", "settings.json")
+        from path_utils import get_app_root, get_data_root
+        settings_path = os.path.join(get_data_root(), "data", "settings.json")
         if os.path.exists(settings_path):
             import json
             try:
@@ -2219,12 +2318,13 @@ class SettingsDialog(QDialog):
                     
                     # Automation settings
                     auto_data = local_data.get('automation', {})
-                    self.smtp_server.setText(auto_data.get('smtp_server', ''))
-                    self.smtp_port.setValue(auto_data.get('smtp_port', 587))
-                    self.smtp_user.setText(auto_data.get('smtp_user', ''))
-                    self.smtp_password.setText(auto_data.get('smtp_password', ''))
-                    self.smtp_tls.setChecked(auto_data.get('smtp_tls', True))
-                    self.report_recipient.setText(auto_data.get('report_recipient', ''))
+                    self.a_smtp_server.setText(auto_data.get('smtp_server', ''))
+                    self.a_smtp_port.setValue(auto_data.get('smtp_port', 587))
+                    self.a_smtp_user.setText(auto_data.get('smtp_user', ''))
+                    self.a_smtp_password.setText(auto_data.get('smtp_password', ''))
+                    self.a_smtp_tls.setChecked(auto_data.get('smtp_tls', True))
+                    self.a_report_recipient.setText(auto_data.get('report_recipient', ''))
+                    self.a_gemini_key.setText(auto_data.get('gemini_api_key', ''))
                     self.report_day.setValue(auto_data.get('report_day', 10))
                     self.auto_reports_enabled.setChecked(auto_data.get('auto_reports_enabled', False))
                     
@@ -2281,8 +2381,8 @@ class SettingsDialog(QDialog):
             set_setting('tech_egn', self.s_tech_egn.text().strip())
 
             # 2. Save Local Settings to JSON
-            from path_utils import get_app_root
-            data_dir = os.path.join(get_app_root(), "data")
+            from path_utils import get_app_root, get_data_root
+            data_dir = os.path.join(get_data_root(), "data")
             os.makedirs(data_dir, exist_ok=True)
             
             # Read existing to preserve keys we don't manage here (like last_sync_time)
@@ -2337,12 +2437,13 @@ class SettingsDialog(QDialog):
 
             # Save Automation & Email Settings
             auto_data = {
-                'smtp_server': self.smtp_server.text().strip(),
-                'smtp_port': self.smtp_port.value(),
-                'smtp_user': self.smtp_user.text().strip(),
-                'smtp_password': self.smtp_password.text().strip(),
-                'smtp_tls': self.smtp_tls.isChecked(),
-                'report_recipient': self.report_recipient.text().strip(),
+                'smtp_server': self.a_smtp_server.text().strip(),
+                'smtp_port': self.a_smtp_port.value(),
+                'smtp_user': self.a_smtp_user.text().strip(),
+                'smtp_password': self.a_smtp_password.text().strip(),
+                'smtp_tls': self.a_smtp_tls.isChecked(),
+                'report_recipient': self.a_report_recipient.text().strip(),
+                'gemini_api_key': self.a_gemini_key.text().strip(),
                 'report_day': self.report_day.value(),
                 'auto_reports_enabled': self.auto_reports_enabled.isChecked(),
                 'email_7d_ahead': getattr(self, 'email_7d', True),
@@ -2374,13 +2475,13 @@ class SettingsDialog(QDialog):
     def send_test_email(self):
         """Send a test email to verify SMTP configuration"""
         smtp_cfg = {
-            'server': self.smtp_server.text().strip(),
-            'port': self.smtp_port.value(),
-            'user': self.smtp_user.text().strip(),
-            'password': self.smtp_password.text().strip(),
-            'use_tls': self.smtp_tls.isChecked()
+            'server': self.a_smtp_server.text().strip(),
+            'port': self.a_smtp_port.value(),
+            'user': self.a_smtp_user.text().strip(),
+            'password': self.a_smtp_password.text().strip(),
+            'use_tls': self.a_smtp_tls.isChecked()
         }
-        recipient = self.report_recipient.text().strip()
+        recipient = self.a_report_recipient.text().strip()
         
         if not smtp_cfg['server'] or not smtp_cfg['user'] or not recipient:
             QMessageBox.warning(self, "Внимание", "Моля попълнете SMTP сървър, потребител и получател!")
@@ -2464,8 +2565,8 @@ class SettingsDialog(QDialog):
 
     def browse_backup(self):
         """Browse for a backup ZIP file"""
-        from path_utils import get_app_root
-        backups_dir = os.path.join(get_app_root(), "backups")
+        from path_utils import get_app_root, get_data_root
+        backups_dir = os.path.join(get_data_root(), "backups")
         if not os.path.exists(backups_dir):
             backups_dir = os.getcwd()
             
@@ -2586,31 +2687,48 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout()
         
         # Email SMTP Group
-        email_group = QGroupBox("SMTP Конфигурация (за изпращане на справки)")
+        email_group = QGroupBox("Автоматизация и Известия")
         email_form = QFormLayout()
         
-        self.smtp_server = QLineEdit()
-        self.smtp_server.setPlaceholderText("напр. smtp.gmail.com")
+        self.a_smtp_server = QLineEdit()
+        self.a_smtp_server.setPlaceholderText("напр. smtp.gmail.com")
         
-        self.smtp_port = QSpinBox()
-        self.smtp_port.setRange(1, 65535)
-        self.smtp_port.setValue(587)
+        self.a_smtp_port = QSpinBox()
+        self.a_smtp_port.setRange(1, 65535)
+        self.a_smtp_port.setValue(587)
         
-        self.smtp_user = QLineEdit()
-        self.smtp_user.setPlaceholderText("vladpos@gmail.com")
+        self.a_smtp_user = QLineEdit()
+        self.a_smtp_user.setPlaceholderText("vladpos@gmail.com")
         
-        self.smtp_password = QLineEdit()
-        self.smtp_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self.smtp_password.setPlaceholderText("App Password")
+        self.a_smtp_password = QLineEdit()
+        self.a_smtp_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.a_smtp_password.setPlaceholderText("App Password")
         
-        self.smtp_tls = QCheckBox("Използвай TLS (STARTTLS)")
-        self.smtp_tls.setChecked(True)
+        self.a_smtp_tls = QCheckBox("Използвай TLS/SSL")
+        self.a_smtp_tls.setChecked(True)
         
-        email_form.addRow("SMTP Сървър:", self.smtp_server)
-        email_form.addRow("Порт:", self.smtp_port)
-        email_form.addRow("Потребител (Email):", self.smtp_user)
-        email_form.addRow("Парола / App Pass:", self.smtp_password)
-        email_form.addRow("", self.smtp_tls)
+        self.a_report_recipient = QLineEdit()
+        self.a_report_recipient.setPlaceholderText("имейл на сервиза...")
+
+        # New: Gemini AI settings
+        self.a_gemini_key = QLineEdit()
+        self.a_gemini_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self.a_gemini_key.setPlaceholderText("AIzaSy...")
+        
+        email_form.addRow(QLabel("<b>Настройки на имейл (SMTP)</b>"))
+        email_form.addRow("SMTP Сървър:", self.a_smtp_server)
+        email_form.addRow("Порт:", self.a_smtp_port)
+        email_form.addRow("Потребител:", self.a_smtp_user)
+        email_form.addRow("Парола:", self.a_smtp_password)
+        email_form.addRow("", self.a_smtp_tls)
+        email_form.addRow("Получател на справки:", self.a_report_recipient)
+        
+        email_form.addRow(QLabel("<br><b>Google Gemini AI (За адреси)</b>"))
+        email_form.addRow("API Ключ:", self.a_gemini_key)
+        
+        hint = QLabel("<i>* Ключът се използва за интелигентно попълване на адреси при търсене по ЕИК.</i>")
+        hint.setStyleSheet("color: gray; font-size: 11px;")
+        email_form.addRow("", hint)
         
         email_group.setLayout(email_form)
         layout.addWidget(email_group)
@@ -2633,6 +2751,10 @@ class SettingsDialog(QDialog):
         btn_test_email.clicked.connect(self.send_test_email)
         
         report_form.addRow("Получател на справката:", self.report_recipient)
+        
+        help_label = QLabel("Можете да въведете няколко имейла, разделени със запетая.")
+        help_label.setStyleSheet("color: gray; font-size: 10px;")
+        report_form.addRow("", help_label)
         report_form.addRow("Ден за изпращане:", self.report_day)
         report_form.addRow("", self.auto_reports_enabled)
         report_form.addRow("", btn_test_email)
@@ -2665,13 +2787,15 @@ class SettingsDialog(QDialog):
 
     def test_connection(self):
         url = self.server_ip.text().strip()
-        # Sanitize URL: remove trailing slash and /status
+        if not url: return
+        
+        # Sanitize URL: add http:// if missing, remove trailing slash and /status
+        if not url.lower().startswith("http"):
+            url = f"http://{url}"
         if url.endswith("/"):
             url = url[:-1]
         if url.endswith("/status"):
             url = url[:-7]
-            
-        if not url: return
         
         try:
             import requests
@@ -3292,17 +3416,30 @@ class ClientEditorDialog(QDialog):
         self.contract_expiry.setDate(db_to_qdate(d.get('contract_expiry')))
 
     def check_vat_status(self):
-        """Check VAT registration status online and fill data"""
+        """Check VAT registration status online and fill data (Threaded)"""
         eik = self.eik.text().strip()
         if not eik:
             QMessageBox.warning(self, "Грешка", "Моля, въведете ЕИК първо.")
             return
 
-        result = check_vat(eik)
-        
-        if result is None:
-            QMessageBox.warning(self, "Няма връзка", "Няма информация или връзка с регистъра.")
-        else:
+        # Show progress
+        self.progress = QProgressDialog("🔍 Проверка в регистър и AI анализ...", "Отказ", 0, 0, self)
+        self.progress.setWindowTitle("Моля изчакайте")
+        self.progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.progress.show()
+
+        self.worker = VATWorker(eik)
+        self.worker.finished.connect(self.on_vat_finished)
+        self.worker.error.connect(self.on_vat_error)
+        self.worker.start()
+
+    def on_vat_error(self, err_msg):
+        self.progress.close()
+        QMessageBox.critical(self, "Грешка", f"Грешка при проверка:\n{err_msg}")
+
+    def on_vat_finished(self, result):
+        self.progress.close()
+        if result:
             if result.get("name"):
                 self.company_name.setText(result.get("name", ""))
                 self.city.setText(result.get("city", ""))
@@ -3320,6 +3457,8 @@ class ClientEditorDialog(QDialog):
                 QMessageBox.information(self, "Успех", f"Открита фирма:\n{result.get('name')}\nЗДДС: {status_text}")
             else:
                 QMessageBox.information(self, "Резултат", "Не бе открита информация за този ЕИК.")
+        else:
+            QMessageBox.warning(self, "Няма връзка", "Няма информация или връзка с регистъра.")
 
     def save_client(self):
         data = {

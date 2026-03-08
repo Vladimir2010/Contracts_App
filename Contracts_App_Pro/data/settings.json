@@ -24,12 +24,14 @@
     "smtp_user": "kasovi.aparati.profinans@gmail.com",
     "smtp_password": "alqhfgxtyxnspfke",
     "smtp_tls": true,
-    "report_recipient": "vladi.work@abv.bg",
+    "report_recipient": "vladi.work@abv.bg, vladikomputers2000@abv.bg",
     "report_day": 10,
     "auto_reports_enabled": true,
     "email_7d_ahead": true,
     "email_14d_ahead": true,
-    "email_30d_ahead": true
+    "email_30d_ahead": true,
+    "last_alert_date": "2026-03-06",
+    "gemini_api_key": "AIzaSyAvrM5qtwP2IjtC0gOiQFew7ABFs4kb36s"
   },
   "autorun": true,
   "backup": {

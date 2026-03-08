@@ -30,8 +30,8 @@ def _get_encryption_key():
 
 def _get_storage_path():
     """Get path to encrypted super admin file"""
-    from path_utils import get_app_root
-    data_dir = os.path.join(get_app_root(), "data")
+    from path_utils import get_app_root, get_data_root
+    data_dir = os.path.join(get_data_root(), "data")
     os.makedirs(data_dir, exist_ok=True)
     return os.path.join(data_dir, ".super_admin.enc")
 

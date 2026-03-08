@@ -1,39 +1,59 @@
+
 import os
-import shutil
 import subprocess
 import sys
 
 def build():
-    print("--- Starting Contracts App Build Process ---")
+    # Configuration
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    main_script = os.path.join(project_root, "Contracts_App_Pro", "src", "main.py")
+    version_file = os.path.join(project_root, "version_info.txt")
+    icon_file = os.path.join(project_root, "Contracts_App_Pro", "resources", "vladpos_logo.ico")
     
-    # 1. Cleanup
-    dirs_to_clean = ['build', 'dist']
-    for d in dirs_to_clean:
-        if os.path.exists(d):
-            print(f"Cleaning {d}...")
-            shutil.rmtree(d)
+    # Check if files exist
+    if not os.path.exists(main_script):
+        print(f"Error: Main script not found at {main_script}")
+        return
     
-    # 2. Run PyInstaller
-    print("Running PyInstaller...")
+    # PyInstaller command
+    cmd = [
+        "pyinstaller",
+        "--noconfirm",
+        "--onefile",
+        "--windowed", # No console
+        f"--icon={icon_file}" if os.path.exists(icon_file) else "",
+        f"--version-file={version_file}" if os.path.exists(version_file) else "",
+        # Add data folders
+        f"--add-data=Contracts_App_Pro/src;src",
+        f"--add-data=Contracts_App_Pro/resources;resources",
+        # Name of the output
+        "--name=ContractsAppPro",
+        main_script
+    ]
+    
+    # Remove empty strings from cmd
+    cmd = [c for c in cmd if c]
+    
+    print("Starting build process...")
+    print(f"Command: {' '.join(cmd)}")
+    
     try:
-        subprocess.check_call(['pyinstaller', '--noconfirm', 'ContractsApp.spec'])
+        subprocess.check_call(cmd)
+        print("\n" + "="*50)
+        print("BUILD SUCCESSFUL!")
+        print("Your professional executable is in the 'dist' folder.")
+        print("="*50)
     except subprocess.CalledProcessError as e:
-        print(f"Error during PyInstaller execution: {e}")
-        return
-    except FileNotFoundError:
-        print("Error: PyInstaller not found. Please install it with 'pip install pyinstaller'")
-        return
-
-    # 3. Verification
-    exe_path = os.path.join('dist', 'ContractsApp', 'ContractsApp.exe')
-    if os.path.exists(exe_path):
-        print("\nSUCCESS!")
-        print(f"Executable created at: {os.path.abspath(exe_path)}")
-        print("Final Steps:")
-        print("1. Copy 'dist/ContractsApp' to your installation folder.")
-        print("2. Run ContractsApp.exe to start the application.")
-    else:
-        print("\nBuild completed, but executable not found. Check the output logs.")
+        print(f"Build failed with error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
 
 if __name__ == "__main__":
+    # Check if pyinstaller is installed
+    try:
+        import PyInstaller
+    except ImportError:
+        print("PyInstaller is not installed. Please run: pip install pyinstaller")
+        sys.exit(1)
+        
     build()

@@ -2,7 +2,11 @@ import requests
 import xml.etree.ElementTree as ET
 import re
 import datetime
+import sys
+import os
+import json
 
+from path_utils import get_data_root
 def format_to_title_case(text):
     """
     Converts ALL CAPS text to Title Case.
@@ -200,6 +204,59 @@ def clean_full_address(address_str, city_name="", district_name=""):
         
     return cleaned
 
+def check_gemini_address(raw_address, api_key):
+    """
+    Uses Google Gemini AI to parse and format a Bulgarian address.
+    Returns: Dict with city, postal_code, district, street, block, entrance, floor, apartment
+    """
+    if not api_key:
+        return None
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={api_key}"
+    headers = {'Content-Type': 'application/json'}
+    
+    prompt = f"""
+    Parse this Bulgarian address into JSON:
+    "{raw_address}"
+    
+    Format:
+    {{
+      "city": "гр./с. Name",
+      "postal_code": "4-digits",
+      "district": "р-н/ж.к./кв. Name",
+      "rest": "ул. Name, бл. #, ет. #, ап. #"
+    }}
+    
+    Rules:
+    - Standard abbreviations only: ул., ж.к., бл., ет., вх., ап.
+    - Title Case for names.
+    - No duplicate prefixes.
+    - If no street is found, just put building info in "rest".
+    - Return ONLY the JSON object.
+    """
+    
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "response_mime_type": "application/json",
+        }
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=20)
+        if response.status_code == 200:
+            content = response.json()
+            text = content.get('candidates', [{}])[0].get('content', {}).get('parts', [{}])[0].get('text', '{}')
+            parsed = json.loads(text)
+            return parsed
+        else:
+            print(f"Gemini Error {response.status_code}: {response.text}")
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+    return None
+
 def check_tr(eik: str):
     """
     Fetch company details (Name, MOL, Address) from the Bulgarian Commercial Register API.
@@ -217,7 +274,11 @@ def check_tr(eik: str):
         if response.status_code != 200:
             return None
             
-        data = response.json()
+        try:
+            data = response.json()
+        except Exception as e:
+            print(f"TR Check JSON Error: {e} | URL: {url[:50]}...")
+            return None
         mol = ""
         tr_address = ""
         tr_latin_name = ""
@@ -350,18 +411,52 @@ def check_vat(eik: str):
         if not result_data["address"]:
             result_data["address"] = tr_addr
     
-    # 3. Parse City, Postal Code, and District
-    city, post, dist = parse_bulgarian_address(result_data["address"])
-    if not dist:
-        dist = tr_dist # Fallback
+    # 3. Load Gemini Key from Settings
+    gemini_key = ""
+    try:
+        settings_path = os.path.join(get_data_root(), "data", "settings.json")
+        if os.path.exists(settings_path):
+            with open(settings_path, 'r', encoding='utf-8') as f:
+                settings = json.load(f)
+                gemini_key = settings.get('automation', {}).get('gemini_api_key', '')
+    except: pass
+
+    # 4. Parse Address (AI or Local)
+    ai_result = None
+    if gemini_key and result_data["address"]:
+        ai_result = check_gemini_address(result_data["address"], gemini_key)
     
-    result_data["city"] = format_to_title_case(city)
-    result_data["postal_code"] = post
-    
-    # 4. Final Formatting
+    if ai_result:
+        # Use AI findings
+        result_data["city"] = ai_result.get("city", result_data["city"])
+        result_data["postal_code"] = ai_result.get("postal_code", result_data["postal_code"])
+        
+        dist = ai_result.get("district", "")
+        # Process the rest/address string from AI
+        result_data["address"] = ai_result.get("rest", "")
+        
+        # Ensure district is formatted
+        if dist:
+            dist_str = format_to_title_case(dist)
+            if not dist_str.lower().startswith(("р-н", "район", "ж.к.", "кв.")):
+                dist_str = f"ж.к. {dist_str}"
+            
+            if result_data["address"]:
+                result_data["address"] = f"{dist_str}, {result_data['address']}"
+            else:
+                result_data["address"] = dist_str
+    else:
+        # Fallback to local Regex parsing
+        city, post, dist = parse_bulgarian_address(result_data["address"])
+        if not dist:
+            dist = tr_dist # Fallback
+        
+        result_data["city"] = format_to_title_case(city)
+        result_data["postal_code"] = post
+        result_data["address"] = clean_full_address(result_data["address"], result_data["city"], dist)
+
+    # 5. Final Polishing for Company Name
     if result_data["name"]:
         result_data["name"] = format_company_name(result_data["name"])
         
-    result_data["address"] = clean_full_address(result_data["address"], result_data["city"], dist)
-
     return result_data

@@ -1,24 +1,32 @@
 import threading
 import uvicorn
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-import sqlite3
-from datetime import datetime
-
-# Import database functions safely
-# We need to add the parent directory to path to import database if running directly
 import sys
-current_dir = os.path.dirname(os.path.abspath(__file__))
-if current_dir not in sys.path:
-    sys.path.append(current_dir)
+import uuid
+import sqlite3
+import traceback
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from PyQt6.QtCore import QObject, pyqtSignal
+import json
 
-try:
-    from database import get_connection, DB_PATH
-except ImportError:
-    # If standard import fails, try running as script
-    pass
+# Setup server-side file logging for debugging EXE mode
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "server_sync.log")
+
+def server_log(msg, use_traceback=False):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{timestamp}] {msg}"
+    if use_traceback:
+        log_line += "\n" + traceback.format_exc()
+    print(log_line)
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except:
+        pass
 
 app = FastAPI(title="Contracts App Sync Server")
 
@@ -34,7 +42,11 @@ class SyncPushRequest(BaseModel):
     client_id: str
     items: List[SyncPushItem]
 
-# --- API Endpoints ---
+# Signals for UI updates
+class ServerSignals(QObject):
+    data_pushed = pyqtSignal()
+
+signals = ServerSignals()
 
 @app.get("/status")
 def status():
@@ -43,316 +55,374 @@ def status():
 @app.post("/sync/pull")
 def pull_changes(req: SyncPullRequest):
     """Client asks for changes since last_sync_time"""
-    con = get_connection()
-    cur = con.cursor()
-    
-    response = {"clients": [], "devices": [], "users": [], "products": [], "repair_history": [], "certificates": [], "audit_logs": []}
-    
+    server_log(f"PULL REQUEST received since {req.last_sync_time}")
+    con = None
     try:
-        # Get changed clients
-        cur.execute(f"SELECT * FROM clients WHERE last_modified >= ?", (req.last_sync_time,))
-        cols = [description[0] for description in cur.description]
-        clients = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["clients"] = clients
-        
-        # Get changed devices
-        cur.execute(f"SELECT * FROM devices WHERE last_modified >= ?", (req.last_sync_time,))
-        cols = [description[0] for description in cur.description]
-        devices = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["devices"] = devices
-        
-        # Get changed users
-        cur.execute(f"SELECT * FROM users WHERE last_modified >= ?", (req.last_sync_time,))
-        cols = [description[0] for description in cur.description]
-        users = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["users"] = users
+        try:
+            from database import get_connection
+        except ImportError:
+            server_log("CRITICAL: Could not import get_connection from database.py", use_traceback=True)
+            raise HTTPException(status_code=500, detail="Database import error")
 
-        # Get changed products
-        cur.execute(f"SELECT * FROM products WHERE last_modified >= ?", (req.last_sync_time,))
-        cols = [description[0] for description in cur.description]
-        products = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["products"] = products
+        con = get_connection()
+        cur = con.cursor()
+        response = {"clients": [], "devices": [], "users": [], "products": [], "repair_history": [], "certificates": [], "audit_logs": [], "global_settings": []}
         
-        # Get changed repairs
-        cur.execute(f"SELECT * FROM repair_history WHERE last_modified >= ?", (req.last_sync_time,))
-        cols = [description[0] for description in cur.description]
-        repairs = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["repair_history"] = repairs
+        last_sync = req.last_sync_time
+        # Use > to avoid circular sync of same records
         
-        # Get changed certificates
-        cur.execute(f"SELECT * FROM certificates WHERE last_modified >= ?", (req.last_sync_time,))
-        cols = [description[0] for description in cur.description]
-        certificates = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["certificates"] = certificates
+        tables = {
+            "clients": "SELECT * FROM clients WHERE last_modified >= ?",
+            "users": "SELECT * FROM users WHERE last_modified >= ?",
+            "products": "SELECT * FROM products WHERE last_modified >= ?",
+            "repair_history": "SELECT * FROM repair_history WHERE last_modified >= ?",
+            "certificates": "SELECT * FROM certificates WHERE last_modified >= ?",
+            "audit_logs": "SELECT * FROM audit_logs WHERE last_modified >= ?",
+            "global_settings": "SELECT * FROM global_settings WHERE last_modified >= ?",
+            "invoices": "SELECT * FROM invoices WHERE last_modified >= ?",
+            "counterparties": "SELECT * FROM counterparties WHERE last_modified >= ?"
+        }
 
-        # Get changed audit logs
-        cur.execute(f"SELECT * FROM audit_logs WHERE last_modified >= ?", (req.last_sync_time,))
+        for key, query in tables.items():
+            cur.execute(query, (last_sync,))
+            cols = [description[0] for description in cur.description]
+            response[key] = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # Special case for devices - need parent_contract_number
+        cur.execute("""
+            SELECT d.*, c.contract_number as parent_contract_number 
+            FROM devices d
+            JOIN clients c ON d.client_id = c.id
+            WHERE d.last_modified >= ?
+        """, (last_sync,))
         cols = [description[0] for description in cur.description]
-        audit_logs = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["audit_logs"] = audit_logs
-        
-        # Get changed global settings
-        cur.execute(f"SELECT * FROM global_settings WHERE last_modified >= ?", (req.last_sync_time,))
+        response["devices"] = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # Special case for invoice_items - need parent_invoice_uuid
+        cur.execute("""
+            SELECT i.*, inv.uuid as parent_invoice_uuid 
+            FROM invoice_items i
+            JOIN invoices inv ON i.invoice_id = inv.id
+            WHERE i.last_modified >= ?
+        """, (last_sync,))
         cols = [description[0] for description in cur.description]
-        settings = [dict(zip(cols, row)) for row in cur.fetchall()]
-        response["global_settings"] = settings
+        response["invoice_items"] = [dict(zip(cols, row)) for row in cur.fetchall()]
+
+        # Special case for handover_protocols - need counterparty_uuid
+        cur.execute("""
+            SELECT p.*, cp.uuid as counterparty_uuid 
+            FROM handover_protocols p
+            LEFT JOIN counterparties cp ON p.counterparty_id = cp.id
+            WHERE p.last_modified >= ?
+        """, (last_sync,))
+        cols = [description[0] for description in cur.description]
+        response["handover_protocols"] = [dict(zip(cols, row)) for row in cur.fetchall()]
         
     finally:
         con.close()
-        
     return response
-
-from PyQt6.QtCore import QObject, pyqtSignal
-
-class ServerSignals(QObject):
-    data_pushed = pyqtSignal()
-
-# Global signals instance
-signals = ServerSignals()
 
 @app.post("/sync/push")
 def push_changes(req: SyncPushRequest):
     """Client sends local changes to be merged"""
-    con = get_connection()
-    cur = con.cursor()
-    
+    server_log(f"PUSH REQUEST received with {len(req.items)} items")
+    con = None
     try:
+        try:
+            from database import get_connection
+        except ImportError:
+            server_log("CRITICAL: Could not import get_connection from database.py", use_traceback=True)
+            raise HTTPException(status_code=500, detail="Database import error")
+            
+        con = get_connection()
+        cur = con.cursor()
         data_changed = False
+        stats = {"clients": 0, "devices": 0, "users": 0, "products": 0, "repairs": 0, "audit_logs": 0, "certificates": 0, "global_settings": 0, "errors": 0}
+
         for item in req.items:
             table = item.table
             data = item.data
+            if not data: continue
             
-            # Remove keys that shouldn't be pushed directly
             data_to_save = {k: v for k, v in data.items() if k not in ['id', 'parent_contract_number']}
+            server_log(f"SERVER SYNC DEBUG: Processing {table} data for {data.get('contract_number') or data.get('serial_number') or 'unknown'}")
             
-            if table == "clients":
-                contract_num = data.get('contract_number')
-                if contract_num:
-                    cur.execute("SELECT id FROM clients WHERE contract_number = ?", (contract_num,))
-                    exists = cur.fetchone()
-                    
-                    if exists:
-                        # Check timestamp for clients too
-                        incoming_ts = data.get('last_modified', '')
-                        cur.execute("SELECT last_modified FROM clients WHERE id=?", (exists[0],))
-                        existing_ts = cur.fetchone()[0]
-                        if not existing_ts: existing_ts = ""
-                        
-                        if incoming_ts > existing_ts:
-                            clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
-                            values = list(data_to_save.values())
-                            cur.execute(f"UPDATE clients SET {clauses} WHERE id=?", (*values, exists[0]))
-                            data_changed = True
-                        else:
-                            pass
-                    else:
-                        cols = ", ".join(data_to_save.keys())
-                        placeholders = ", ".join(["?" for _ in data_to_save])
-                        cur.execute(f"INSERT INTO clients ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
-                        data_changed = True
-
-            elif table == "devices":
-                serial = data.get('serial_number')
-                parent_cn = data.get('parent_contract_number')
-                
-                if serial and parent_cn:
-                    # 1. Resolve client_id on server
-                    cur.execute("SELECT id FROM clients WHERE contract_number = ?", (parent_cn,))
-                    client_res = cur.fetchone()
-                    
-                    if client_res:
-                        client_id = client_res[0]
-                        data_to_save['client_id'] = client_id
-                        
-                        # 2. Check if device exists
-                        cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
-                        exists = cur.fetchone() # FIX: Added missing fetchone()
-                        
+            try:
+                if table == "clients":
+                    contract_num = data.get('contract_number')
+                    if contract_num:
+                        cur.execute("SELECT id FROM clients WHERE contract_number = ?", (contract_num,))
+                        exists = cur.fetchone()
                         if exists:
-                            # Check timestamp to prevent overwriting newer data with old data
                             incoming_ts = data.get('last_modified', '')
-                            
-                            # Fetch existing timestamp
-                            cur.execute("SELECT last_modified FROM devices WHERE id=?", (exists[0],))
-                            existing_ts = cur.fetchone()[0]
-                            if not existing_ts: existing_ts = ""
-                            
+                            cur.execute("SELECT last_modified FROM clients WHERE id=?", (exists[0],))
+                            existing_ts = cur.fetchone()[0] or ""
                             if incoming_ts > existing_ts:
                                 clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
-                                values = list(data_to_save.values())
-                                cur.execute(f"UPDATE devices SET {clauses} WHERE id=?", (*values, exists[0]))
+                                cur.execute(f"UPDATE clients SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
                                 data_changed = True
+                                stats["clients"] += 1
                         else:
                             cols = ", ".join(data_to_save.keys())
                             placeholders = ", ".join(["?" for _ in data_to_save])
-                            cur.execute(f"INSERT INTO devices ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            cur.execute(f"INSERT INTO clients ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
                             data_changed = True
+                            stats["clients"] += 1
+                            server_log(f"SERVER SYNC: Inserted client {contract_num}")
 
-            elif table == "users":
-                username = data.get('username')
-                if username:
-                    cur.execute("SELECT id FROM users WHERE username = ?", (username,))
-                    exists = cur.fetchone()
-                    
-                    if exists:
-                        incoming_ts = data.get('last_modified', '')
-                        cur.execute("SELECT last_modified FROM users WHERE id=?", (exists[0],))
-                        ts_row = cur.fetchone()
-                        existing_ts = ts_row[0] if ts_row else ""
-                        
-                        if incoming_ts > existing_ts:
-                            clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
-                            values = list(data_to_save.values())
-                            cur.execute(f"UPDATE users SET {clauses} WHERE id=?", (*values, exists[0]))
-                            data_changed = True
+                elif table == "devices":
+                    serial = data.get('serial_number')
+                    parent_cn = data.get('parent_contract_number')
+                    if serial and parent_cn:
+                        cur.execute("SELECT id FROM clients WHERE contract_number = ?", (parent_cn,))
+                        client_res = cur.fetchone()
+                        if client_res:
+                            client_id = client_res[0]
+                            data_to_save['client_id'] = client_id
+                            cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
+                            exists = cur.fetchone()
+                            if exists:
+                                incoming_ts = data.get('last_modified', '')
+                                cur.execute("SELECT last_modified FROM devices WHERE id=? ", (exists[0],))
+                                existing_ts = cur.fetchone()[0] or ""
+                                if incoming_ts > existing_ts:
+                                    clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                    cur.execute(f"UPDATE devices SET {clauses} WHERE id=? ", (*data_to_save.values(), exists[0]))
+                                    data_changed = True
+                                    stats["devices"] += 1
+                                    server_log(f"SERVER SYNC: Updated device {serial}")
+                            else:
+                                cols = ", ".join(data_to_save.keys())
+                                placeholders = ", ".join(["?" for _ in data_to_save])
+                                cur.execute(f"INSERT INTO devices ({cols}) VALUES ({placeholders}) ", list(data_to_save.values()))
+                                data_changed = True
+                                stats["devices"] += 1
+                                server_log(f"SERVER SYNC: Inserted device {serial}")
+                        else:
+                            server_log(f"SERVER SYNC ERROR: Client {parent_cn} not found for device {serial}")
+                            stats["errors"] += 1
                     else:
-                        cols = ", ".join(data_to_save.keys())
-                        placeholders = ", ".join(["?" for _ in data_to_save])
-                        cur.execute(f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
-                        data_changed = True
+                        server_log(f"SERVER SYNC SKIP: Missing serial({serial}) or contract({parent_cn}) for device data: {json.dumps(data)}")
+                        stats["errors"] += 1
 
-            elif table == "products":
-                u = data.get('uuid')
-                if u:
-                    cur.execute("SELECT id FROM products WHERE uuid = ?", (u,))
-                    exists = cur.fetchone()
-                    
-                    if exists:
-                        incoming_ts = data.get('last_modified', '')
-                        cur.execute("SELECT last_modified FROM products WHERE id=?", (exists[0],))
-                        ts_row = cur.fetchone()
-                        existing_ts = ts_row[0] if ts_row else ""
-                        
-                        if incoming_ts >= existing_ts:
-                            clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
-                            values = list(data_to_save.values())
-                            cur.execute(f"UPDATE products SET {clauses} WHERE id=?", (*values, exists[0]))
-                            data_changed = True
-                    else:
-                        cols = ", ".join(data_to_save.keys())
-                        placeholders = ", ".join(["?" for _ in data_to_save])
-                        cur.execute(f"INSERT INTO products ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
-                        data_changed = True
-                else:
-                    # Fallback for name only (should not happen after migration)
-                    name = data.get('name')
-                    if name:
-                        cur.execute("SELECT id FROM products WHERE name = ?", (name,))
+                elif table == "users":
+                    username = data.get('username')
+                    if username:
+                        cur.execute("SELECT id FROM users WHERE username = ?", (username,))
                         exists = cur.fetchone()
-                        if not exists:
-                            data_to_save['uuid'] = str(uuid.uuid4())
+                        incoming_ts = data.get('last_modified', '')
+                        if exists:
+                            cur.execute("SELECT last_modified FROM users WHERE id=?", (exists[0],))
+                            existing_ts = cur.fetchone()[0] or ""
+                            if incoming_ts > existing_ts:
+                                clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                cur.execute(f"UPDATE users SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
+                                data_changed = True
+                                stats["users"] += 1
+                        else:
+                            cols = ", ".join(data_to_save.keys())
+                            placeholders = ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO users ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            data_changed = True
+                            stats["users"] += 1
+
+                elif table == "products":
+                    u = data.get('uuid')
+                    if u:
+                        cur.execute("SELECT id FROM products WHERE uuid = ?", (u,))
+                        exists = cur.fetchone()
+                        incoming_ts = data.get('last_modified', '')
+                        if exists:
+                            cur.execute("SELECT last_modified FROM products WHERE id=?", (exists[0],))
+                            existing_ts = cur.fetchone()[0] or ""
+                            if incoming_ts >= existing_ts:
+                                clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                cur.execute(f"UPDATE products SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
+                                data_changed = True
+                                stats["products"] += 1
+                        else:
                             cols = ", ".join(data_to_save.keys())
                             placeholders = ", ".join(["?" for _ in data_to_save])
                             cur.execute(f"INSERT INTO products ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
                             data_changed = True
-                        
-            elif table == "repair_history":
-                # For repairs, we use serial_number to find the server-side device_id
-                serial = data.get('serial_number')
-                if not serial: continue
-                
-                cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
-                dev_res = cur.fetchone()
-                if not dev_res: continue
-                
-                dev_id = dev_res[0]
-                r_date = data.get('repair_date')
-                prob = data.get('problem_description')
-                
-                # Check if this precise repair already exists
-                cur.execute("SELECT id FROM repair_history WHERE device_id=? AND repair_date=? AND problem_description=?", (dev_id, r_date, prob))
-                exists = cur.fetchone()
-                
-                if not exists:
-                    # Resolve data to save - map to server device_id
-                    rh_data = {k: v for k, v in data_to_save.items() if k != 'serial_number'}
-                    rh_data['device_id'] = dev_id
-                    
-                    cols = ", ".join(rh_data.keys())
-                    placeholders = ", ".join(["?" for _ in rh_data])
-                    cur.execute(f"INSERT INTO repair_history ({cols}) VALUES ({placeholders})", list(rh_data.values()))
-                    data_changed = True
+                            stats["products"] += 1
 
-            elif table == "audit_logs":
-                # Match audit logs by timestamp, username and action to avoid duplicates
-                ts = data.get('timestamp')
-                user = data.get('username')
-                act = data.get('action')
-                
-                if ts and user and act:
-                    cur.execute("SELECT id FROM audit_logs WHERE timestamp=? AND username=? AND action=?", (ts, user, act))
-                    if not cur.fetchone():
-                        cols = ", ".join(data_to_save.keys())
-                        placeholders = ", ".join(["?" for _ in data_to_save])
-                        cur.execute(f"INSERT INTO audit_logs ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
-                        data_changed = True
-                        
-            elif table == "certificates":
-                num = data.get('number')
-                if num:
-                    cur.execute("SELECT id FROM certificates WHERE number = ?", (num,))
-                    exists = cur.fetchone()
-                    
-                    if exists:
+                elif table == "repair_history":
+                    serial = data.get('serial_number')
+                    if serial:
+                        cur.execute("SELECT id FROM devices WHERE serial_number = ?", (serial,))
+                        dev_res = cur.fetchone()
+                        if dev_res:
+                            dev_id = dev_res[0]
+                            r_date = data.get('repair_date')
+                            prob = data.get('problem_description')
+                            cur.execute("SELECT id FROM repair_history WHERE device_id=? AND repair_date=? AND problem_description=?", (dev_id, r_date, prob))
+                            if not cur.fetchone():
+                                rh_data = {k: v for k, v in data_to_save.items() if k != 'serial_number'}
+                                rh_data['device_id'] = dev_id
+                                cols = ", ".join(rh_data.keys())
+                                placeholders = ", ".join(["?" for _ in rh_data])
+                                cur.execute(f"INSERT INTO repair_history ({cols}) VALUES ({placeholders})", list(rh_data.values()))
+                                data_changed = True
+                                stats["repairs"] += 1
+
+                elif table == "audit_logs":
+                    ts, user, act = data.get('timestamp'), data.get('username'), data.get('action')
+                    if ts and user and act:
+                        cur.execute("SELECT id FROM audit_logs WHERE timestamp=? AND username=? AND action=?", (ts, user, act))
+                        if not cur.fetchone():
+                            cols, placeholders = ", ".join(data_to_save.keys()), ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO audit_logs ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            data_changed = True
+                            stats["audit_logs"] += 1
+
+                elif table == "certificates":
+                    num = data.get('number')
+                    if num:
+                        cur.execute("SELECT id FROM certificates WHERE number = ?", (num,))
+                        exists = cur.fetchone()
                         incoming_ts = data.get('last_modified', '')
-                        cur.execute("SELECT last_modified FROM certificates WHERE id=?", (exists[0],))
-                        ts_row = cur.fetchone()
-                        existing_ts = ts_row[0] if ts_row else ""
-                        
-                        if incoming_ts > existing_ts:
-                            clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
-                            values = list(data_to_save.values())
-                            cur.execute(f"UPDATE certificates SET {clauses} WHERE id=?", (*values, exists[0]))
+                        if exists:
+                            cur.execute("SELECT last_modified FROM certificates WHERE id=?", (exists[0],))
+                            existing_ts = cur.fetchone()[0] or ""
+                            if incoming_ts > existing_ts:
+                                clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                cur.execute(f"UPDATE certificates SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
+                                data_changed = True
+                                stats["certificates"] += 1
+                        else:
+                            cols, placeholders = ", ".join(data_to_save.keys()), ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO certificates ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
                             data_changed = True
-                        cur.execute(f"INSERT INTO certificates ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
-                        data_changed = True
+                            stats["certificates"] += 1
 
-            elif table == "global_settings":
-                key = data.get('key')
-                if key:
-                    cur.execute("SELECT last_modified FROM global_settings WHERE key = ?", (key,))
-                    exists = cur.fetchone()
-                    
-                    incoming_ts = data.get('last_modified', '')
-                    if exists:
-                        existing_ts = exists[0] if exists[0] else ""
-                        if incoming_ts > existing_ts:
-                            cur.execute("UPDATE global_settings SET value = ?, last_modified = ? WHERE key = ?",
-                                       (data.get('value'), incoming_ts, key))
+                elif table == "global_settings":
+                    key, val = data.get('key'), data.get('value')
+                    if key:
+                        cur.execute("SELECT last_modified FROM global_settings WHERE key = ?", (key,))
+                        exists = cur.fetchone()
+                        incoming_ts = data.get('last_modified', '')
+                        if exists:
+                            if incoming_ts > (exists[0] or ""):
+                                cur.execute("UPDATE global_settings SET value = ?, last_modified = ? WHERE key = ?", (val, incoming_ts, key))
+                                data_changed = True
+                                stats["global_settings"] += 1
+                        else:
+                            cur.execute("INSERT INTO global_settings (key, value, last_modified) VALUES (?, ?, ?)", (key, val, incoming_ts))
                             data_changed = True
-                    else:
-                        cur.execute("INSERT INTO global_settings (key, value, last_modified) VALUES (?, ?, ?)",
-                                   (key, data.get('value'), incoming_ts))
-                        data_changed = True
+                            stats["global_settings"] += 1
+
+                elif table == "invoices":
+                    u = data.get('uuid')
+                    if u:
+                        cur.execute("SELECT id, last_modified FROM invoices WHERE uuid = ?", (u,))
+                        exists = cur.fetchone()
+                        incoming_ts = data.get('last_modified', '')
+                        if exists:
+                            if incoming_ts > (exists[1] or ""):
+                                clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                cur.execute(f"UPDATE invoices SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
+                                data_changed = True
+                                stats["invoices"] = stats.get("invoices", 0) + 1
+                        else:
+                            cols, placeholders = ", ".join(data_to_save.keys()), ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO invoices ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            data_changed = True
+                            stats["invoices"] = stats.get("invoices", 0) + 1
+
+                elif table == "invoice_items":
+                    p_uuid = data.get('parent_invoice_uuid')
+                    if p_uuid:
+                        cur.execute("SELECT id FROM invoices WHERE uuid = ?", (p_uuid,))
+                        inv_res = cur.fetchone()
+                        if inv_res:
+                            inv_id = inv_res[0]
+                            # Simple logic: clear items for this invoice first time we see it in this push
+                            if not hasattr(req, '_cleared_inv_ids'): req._cleared_inv_ids = set()
+                            if inv_id not in req._cleared_inv_ids:
+                                cur.execute("DELETE FROM invoice_items WHERE invoice_id = ?", (inv_id,))
+                                req._cleared_inv_ids.add(inv_id)
+                            
+                            item_data = {k: v for k, v in data_to_save.items() if k != 'parent_invoice_uuid'}
+                            item_data['invoice_id'] = inv_id
+                            cols, placeholders = ", ".join(item_data.keys()), ", ".join(["?" for _ in item_data])
+                            cur.execute(f"INSERT INTO invoice_items ({cols}) VALUES ({placeholders})", list(item_data.values()))
+                            data_changed = True
+
+                elif table == "counterparties":
+                    u = data.get('uuid')
+                    if u:
+                        cur.execute("SELECT id, last_modified FROM counterparties WHERE uuid = ?", (u,))
+                        exists = cur.fetchone()
+                        incoming_ts = data.get('last_modified', '')
+                        if exists:
+                            if incoming_ts > (exists[1] or ""):
+                                clauses = ", ".join([f"{k}=?" for k in data_to_save.keys()])
+                                cur.execute(f"UPDATE counterparties SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
+                                data_changed = True
+                                stats["counterparties"] = stats.get("counterparties", 0) + 1
+                        else:
+                            cols, placeholders = ", ".join(data_to_save.keys()), ", ".join(["?" for _ in data_to_save])
+                            cur.execute(f"INSERT INTO counterparties ({cols}) VALUES ({placeholders})", list(data_to_save.values()))
+                            data_changed = True
+                            stats["counterparties"] = stats.get("counterparties", 0) + 1
+
+                elif table == "handover_protocols":
+                    u = data.get('uuid')
+                    if u:
+                        cur.execute("SELECT id, last_modified FROM handover_protocols WHERE uuid = ?", (u,))
+                        exists = cur.fetchone()
                         
-        con.commit()
+                        cp_uuid = data.get('counterparty_uuid')
+                        local_cp_id = None
+                        if cp_uuid:
+                            cur.execute("SELECT id FROM counterparties WHERE uuid = ?", (cp_uuid,))
+                            cp_res = cur.fetchone()
+                            if cp_res: local_cp_id = cp_res[0]
+                        
+                        protocol_data = {k: v for k, v in data_to_save.items() if k != 'counterparty_uuid'}
+                        if local_cp_id: protocol_data['counterparty_id'] = local_cp_id
+                        
+                        incoming_ts = data.get('last_modified', '')
+                        if exists:
+                            if incoming_ts > (exists[1] or ""):
+                                clauses = ", ".join([f"{k}=?" for k in protocol_data.keys()])
+                                cur.execute(f"UPDATE handover_protocols SET {clauses} WHERE id=?", (*protocol_data.values(), exists[0]))
+                                data_changed = True
+                                stats["protocols"] = stats.get("protocols", 0) + 1
+                        else:
+                            cols, placeholders = ", ".join(protocol_data.keys()), ", ".join(["?" for _ in protocol_data])
+                            cur.execute(f"INSERT INTO handover_protocols ({cols}) VALUES ({placeholders})", list(protocol_data.values()))
+                            data_changed = True
+                            stats["protocols"] = stats.get("protocols", 0) + 1
+            except Exception as e:
+                print(f"SERVER SYNC ITEM ERROR ({table}): {e}")
+                stats["errors"] += 1
+
         if data_changed:
+            con.commit()
+            server_log(f"SERVER SYNC: Push processed. Stats: {stats}")
             signals.data_pushed.emit()
+        elif any(v > 0 for k, v in stats.items() if k != "errors"):
+            server_log(f"SERVER SYNC: Push finished (No changes). Stats: {stats}")
             
     except Exception as e:
-        con.rollback()
+        if con: con.rollback()
+        server_log(f"SERVER SYNC CRITICAL ERROR: {e}", use_traceback=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        con.close()
-        
-    return {"message": "Sync successful", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-
-# --- Server Thread Class ---
+        if con: con.close()
+    return {"message": "Sync successful", "stats": stats, "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 class ServerThread(threading.Thread):
     def __init__(self, host="0.0.0.0", port=8000):
         super().__init__()
-        self.signals = signals # Expose signals to main window
-        self.host = host
-        self.port = port
+        self.host, self.port = host, port
         self.should_stop = False
         
     def run(self):
         try:
             print(f"Starting server on {self.host}:{self.port}...")
-            # Setup Server - specific config for non-blocking
-            # Setup Server - specific config for non-blocking
-            # log_config=None prevents uvicorn from trying to configure logging handlers (which crashes in no-console mode)
             config = uvicorn.Config(app, host=self.host, port=self.port, log_level="critical", loop="asyncio", log_config=None)
             self.server = uvicorn.Server(config)
             self.server.run()
@@ -360,6 +430,5 @@ class ServerThread(threading.Thread):
             print(f"SERVER ERROR: {e}")
         
     def stop(self):
-        self.should_stop = True
         if hasattr(self, 'server'):
             self.server.should_exit = True
