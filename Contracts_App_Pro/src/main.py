@@ -41,6 +41,7 @@ from database import (
 )
 from export_pdf import generate_invoice_pdf
 from contract_generator import generate_service_contract, generate_nap_xml
+from updater_client import check_for_updates, download_and_install_update, CURRENT_APP_VERSION, log_message
 from dialogs import (
     AddDeviceDialog, EditDeviceDialog, AddToExistingContractDialog,
     ExpiringContractsDialog, SettingsDialog, LoginDialog, RepairProtocolDialog,
@@ -64,6 +65,12 @@ except ImportError as e:
     print(f"Sync modules not available: {e}")
     ServerThread = None
     SyncManager = None
+
+try:
+    from hotkey_manager import HotkeyManager
+except ImportError as e:
+    print(f"Hotkey manager not available: {e}")
+    HotkeyManager = None
 
 def set_autorun(enabled: bool):
     """Set the application to start automatically with Windows"""
@@ -481,6 +488,73 @@ class MainWindow(QMainWindow):
         self.automation_thread = AutomationThread()
         self.automation_thread.status_signal.connect(lambda msg: self.statusBar.showMessage(msg, 5000))
         self.automation_thread.start()
+        
+        # Check for updates automatically (3 seconds after startup to not freeze UI)
+        QTimer.singleShot(3000, self.perform_update_check)
+        
+        # Initialize Global Hotkey
+        if HotkeyManager:
+            self.hotkey_mgr = HotkeyManager(self)
+            self.hotkey_mgr.hotkey_triggered.connect(self.on_hotkey_triggered)
+            self.hotkey_mgr.start()
+
+    def perform_update_check(self):
+        """Silently checks for updates in the background. If found, prompts the user."""
+        try:
+            log_message("Извикване на check_for_updates()...")
+            has_update, new_version, url, notes = check_for_updates()
+            log_message(f"Резултат: has_update={has_update}")
+            
+            if has_update:
+                log_message("Показване на QMessageBox...")
+                try:
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    msg.setWindowTitle("Налична е нова версия!")
+                    msg.setText(f"Открита е нова версия <b>{new_version}</b> на програмата.")
+                    
+                    details = f"Вашата версия: {CURRENT_APP_VERSION}\nНова версия: {new_version}\n\nКакво ново:\n{notes}"
+                    msg.setDetailedText(details)
+                    
+                    msg.setInformativeText("Искате ли да изтеглите и инсталирате обновлението сега? Програмата ще се рестартира автоматично.")
+                    
+                    yes_btn = msg.addButton("Да, обнови сега", QMessageBox.ButtonRole.AcceptRole)
+                    msg.addButton("По-късно", QMessageBox.ButtonRole.RejectRole)
+                    
+                    log_message("Преди msg.exec()...")
+                    msg.exec()
+                    log_message("След msg.exec().")
+                    
+                    if msg.clickedButton() == yes_btn:
+                        log_message("Потребителят избра 'Да'.")
+                        # Proceed with download
+                        from PyQt6.QtWidgets import QProgressDialog
+                        progress = QProgressDialog("Изтегляне на новата версия...", "Отказ", 0, 0, self)
+                        progress.setWindowTitle("Обновяване")
+                        progress.setWindowModality(Qt.WindowModality.WindowModal)
+                        progress.show()
+                        
+                        # Ensure UI updates before heavy download
+                        QApplication.processEvents() 
+                        
+                        # We pass the token if defined in updater_client
+                        from updater_client import GITHUB_ACCESS_TOKEN
+                        token = GITHUB_ACCESS_TOKEN if "ТУК_ЩЕ" not in GITHUB_ACCESS_TOKEN else None
+                        
+                        log_message("Старт на download_and_install_update()...")
+                        download_and_install_update(url, token)
+                        
+                        progress.close()
+                        log_message("КРАЙ: Инсталаторът трябва да е стартиран.")
+                except Exception as e:
+                    log_message(f"Грешка при показване на диалога: {e}")
+                    import traceback
+                    log_message(traceback.format_exc())
+                    
+        except Exception as e:
+            log_message(f"Грешка в perform_update_check: {e}")
+            import traceback
+            log_message(traceback.format_exc())
 
     def setup_device_tab(self):
         layout = QVBoxLayout()
@@ -1176,8 +1250,8 @@ class MainWindow(QMainWindow):
     def show_about(self):
         """Show About dialog"""
         QMessageBox.about(self, "За програмата", 
-            """<h3>Contracts App Professional</h3>
-            <p><b>Версия:</b> 1.1.2</p>
+            f"""<h3>Contracts App Professional</h3>
+            <p><b>Версия:</b> {CURRENT_APP_VERSION}</p>
             <p>Професионална система за управление на договори и фискални устройства.</p>
             <p>Този софтуер е предназначен за автоматизиране на процесите по регистрация, 
             дерегистрация и поддръжка на ФУ.</p>
@@ -1251,11 +1325,30 @@ class MainWindow(QMainWindow):
         return layout
     
     def refresh_table(self):
-        """Reload all devices into table"""
+        """Reload all devices into table. Preserves filters if active."""
+        if hasattr(self, 'f_company') and self.has_active_filters():
+            self.apply_filters()
+            return
+            
         self.statusBar.showMessage("Зареждане на данни...")
         data = get_all_devices()
         self.load_table(data)
         self.statusBar.showMessage(f"Заредени {len(data)} записа")
+
+    def has_active_filters(self):
+        """Check if any search filters are currently active on the devices tab"""
+        try:
+            return any([
+                self.f_company.text().strip(),
+                self.f_eik.text().strip(),
+                self.f_contract.text().strip(),
+                self.f_phone.text().strip(),
+                self.f_address.text().strip(),
+                self.f_serial.text().strip(),
+                self.f_euro.isChecked()
+            ])
+        except AttributeError:
+            return False
     
     def load_table(self, data, expiring_mode=False):
         """Load data into table"""
@@ -1389,11 +1482,15 @@ class MainWindow(QMainWindow):
         
         dialog = EditDeviceDialog(device_id, self)
         if dialog.exec():
+            # Retrieve contract number for logging BEFORE refreshing table
+            contract_num = self.table.item(row, 3).text()
             self.refresh_table()
             if self.current_user:
-                # Retrieve contract number for logging
-                contract_num = self.table.item(row, 3).text()
                 log_action(self.current_user['id'], self.current_user['username'], "EDIT_DEVICE", f"Edited device ID {device_id}", contract_number=contract_num, device_id=device_id)
+            
+            # Proactive Sync
+            if self.sync_manager and self.sync_manager.mode == "client":
+                self.sync_manager.sync_now()
     
     def delete_selected_device(self):
         """Delete the selected device"""
@@ -1415,11 +1512,18 @@ class MainWindow(QMainWindow):
             device_id = int(self.table.item(row, 0).text())
             
             if delete_device(device_id):
+                # Retrieve info for logging BEFORE refresh
+                contract_num = self.table.item(row, 3).text()
+                
                 QMessageBox.information(self, "Успех", "Устройството е изтрито!")
                 self.refresh_table()
+                
                 if self.current_user:
-                    contract_num = self.table.item(row, 3).text()
                     log_action(self.current_user['id'], self.current_user['username'], "DELETE_DEVICE", f"Deleted device ID {device_id}", contract_number=contract_num, device_id=device_id)
+                
+                # Proactive Sync
+                if self.sync_manager and self.sync_manager.mode == "client":
+                    self.sync_manager.sync_now()
             else:
                 QMessageBox.critical(self, "Грешка", "Грешка при изтриване!")
     
@@ -2097,6 +2201,14 @@ class MainWindow(QMainWindow):
         # Store menu reference for possible updates
         self.tray_menu = tray_menu
 
+    def on_hotkey_triggered(self):
+        """Toggle window visibility on Alt+D: hide if active, show if background/hidden"""
+        if self.isVisible() and self.isActiveWindow() and not self.isMinimized():
+            self.hide()
+            self.statusBar.showMessage("Програмата продължава да работи на заден план.", 3000)
+        else:
+            self.show_normal()
+
     def on_tray_icon_activated(self, reason):
         try:
             # Defensive check for ActivationReason conversion bug in some PyQt versions
@@ -2116,9 +2228,22 @@ class MainWindow(QMainWindow):
                 self.show_normal()
 
     def show_normal(self):
-        self.show()
-        self.setWindowState(Qt.WindowState.WindowActive)
+        """Restore, show and activate the window, bringing it to the absolute front"""
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+            
+        # Ensure it's active and has focus
         self.activateWindow()
+        self.raise_() # Bring to front of other windows
+        
+        # Windows-specific: Force focus if needed
+        # (Though activateWindow usually suffices for most Qt apps)
+        from PyQt6.QtGui import QWindow
+        window = self.windowHandle()
+        if window:
+            window.requestActivate()
 
     def quit_application(self):
         """Properly quit the application by stopping all threads"""

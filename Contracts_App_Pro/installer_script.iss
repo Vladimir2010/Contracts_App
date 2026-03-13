@@ -3,7 +3,7 @@
 [Setup]
 AppId={{D3E5D7B2-C7D1-4E8F-A6B1-3E2A5D7C9F01}
 AppName=Сервиз
-AppVersion=1.0.5
+AppVersion=1.1.4
 AppPublisher=VladPos Systems
 DefaultDirName={autopf}\ContractsAppPro
 DefaultGroupName=Contracts App Pro

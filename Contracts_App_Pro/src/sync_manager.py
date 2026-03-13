@@ -182,9 +182,9 @@ class SyncManager(QObject):
             p_cn = d.get('parent_contract_number')
             if not sn:
                 print(f"  - !!! WARNING: Device has EMPTY serial number for contract {p_cn} !!!")
-                print(f"    Full data: {json.dumps(d)}")
             else:
-                print(f"  - Device to push: {sn} for contract {p_cn}")
+                is_del = "DELETED" if d.get('is_deleted') else "ACTIVE"
+                print(f"  - Device to push: {sn} ({is_del}) for contract {p_cn}")
         
         # 3. Get modified users
         cur.execute("SELECT * FROM users WHERE last_modified >= ?", (self.last_sync_time,))
@@ -325,6 +325,11 @@ class SyncManager(QObject):
                     msg_parts.append(f"{k}: {len(v)}")
             if msg_parts:
                 print(f"SYNC INFO: Received new data: {', '.join(msg_parts)}")
+                # Detail devices
+                if data.get("devices"):
+                    for d in data.get("devices"):
+                        st = "DELETED" if d.get('is_deleted') else "ACTIVE"
+                        print(f"    - Incoming device: {d.get('serial_number')} ({st})")
             else:
                 print("SYNC INFO: No new data from server.")
 

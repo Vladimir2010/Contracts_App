@@ -7,7 +7,9 @@ import sqlite3
 import traceback
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security.api_key import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PyQt6.QtCore import QObject, pyqtSignal
 import json
@@ -30,6 +32,27 @@ def server_log(msg, use_traceback=False):
 
 app = FastAPI(title="Contracts App Sync Server")
 
+# CORS setup for Web App interaction
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Security
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+def get_api_key(api_key: str = Security(api_key_header)):
+    # For now, we use a simple env var or default. 
+    # In a real app, this would be set in Desktop App settings.
+    authorized_key = os.getenv("CONTRACTS_API_KEY", "vladpos_secret_123")
+    if api_key == authorized_key:
+        return api_key
+    raise HTTPException(status_code=403, detail="Invalid API Key")
+
 # Models
 class SyncPullRequest(BaseModel):
     last_sync_time: str
@@ -51,6 +74,121 @@ signals = ServerSignals()
 @app.get("/status")
 def status():
     return {"status": "running", "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+# --- CRUD Endpoints for Web App ---
+
+@app.get("/api/clients")
+def get_clients_api(api_key: str = Depends(get_api_key)):
+    from database import get_all_clients
+    return get_all_clients()
+
+@app.get("/api/clients/{contract_number}")
+def get_client_api(contract_number: str, api_key: str = Depends(get_api_key)):
+    from database import get_client_by_contract
+    client = get_client_by_contract(contract_number)
+    if not client: raise HTTPException(status_code=404, detail="Client not found")
+    return client
+
+@app.get("/api/devices")
+def get_devices_api(api_key: str = Depends(get_api_key)):
+    con = None
+    try:
+        from database import get_connection
+        con = get_connection()
+        cur = con.cursor()
+        cur.execute("""
+            SELECT d.id, c.contract_number, c.status, c.company_name, c.eik,
+                   c.vat_registered, c.mol, c.city, c.postal_code, c.address,
+                   c.phone1, c.phone2, c.contract_start, c.contract_expiry,
+                   d.object_name, d.object_address, d.object_phone, d.model,
+                   d.serial_number, d.fdrid, d.fiscal_memory, d.certificate_number,
+                   d.certificate_expiry, d.euro_done, d.nra_report_enabled
+            FROM devices d
+            JOIN clients c ON c.id = d.client_id
+            WHERE d.is_deleted = 0
+        """)
+        cols = [description[0] for description in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        if con: con.close()
+
+@app.post("/api/devices")
+def add_device_api(data: Dict[str, Any], api_key: str = Depends(get_api_key)):
+    from database import add_device
+    client_id = data.get('client_id')
+    if not client_id: raise HTTPException(status_code=400, detail="client_id required")
+    try:
+        did = add_device(client_id, data)
+        signals.data_pushed.emit()
+        return {"id": did}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/api/devices/{device_id}")
+def update_device_api(device_id: int, data: Dict[str, Any], api_key: str = Depends(get_api_key)):
+    from database import update_device
+    if update_device(device_id, data, data):
+        signals.data_pushed.emit()
+        return {"message": "Success"}
+    raise HTTPException(status_code=404)
+
+@app.delete("/api/devices/{device_id}")
+def delete_device_api(device_id: int, api_key: str = Depends(get_api_key)):
+    from database import delete_device
+    if delete_device(device_id):
+        signals.data_pushed.emit()
+        return {"message": "Success"}
+    raise HTTPException(status_code=404)
+
+@app.post("/api/clients")
+def add_client_api(data: Dict[str, Any], api_key: str = Depends(get_api_key)):
+    from database import add_client
+    cid = add_client(data)
+    if cid == -1: raise HTTPException(status_code=500, detail="Failed to add client")
+    signals.data_pushed.emit() # Refresh desktop UI
+    return {"id": cid}
+
+@app.put("/api/clients/{client_id}")
+def update_client_api(client_id: int, data: Dict[str, Any], api_key: str = Depends(get_api_key)):
+    from database import update_client
+    if update_client(client_id, data):
+        signals.data_pushed.emit()
+        return {"message": "Success"}
+    raise HTTPException(status_code=404)
+
+@app.delete("/api/clients/{client_id}")
+def delete_client_api(client_id: int, api_key: str = Depends(get_api_key)):
+    from database import delete_client
+    if delete_client(client_id):
+        signals.data_pushed.emit()
+        return {"message": "Success"}
+    raise HTTPException(status_code=404)
+
+@app.get("/api/products")
+def get_products_api(api_key: str = Depends(get_api_key)):
+    con = None
+    try:
+        from database import get_connection
+        con = get_connection()
+        cur = con.cursor()
+        cur.execute("SELECT * FROM products WHERE is_deleted = 0")
+        cols = [description[0] for description in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        if con: con.close()
+
+@app.get("/api/invoices")
+def get_invoices_api(api_key: str = Depends(get_api_key)):
+    con = None
+    try:
+        from database import get_connection
+        con = get_connection()
+        cur = con.cursor()
+        cur.execute("SELECT * FROM invoices WHERE is_deleted = 0")
+        cols = [description[0] for description in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+    finally:
+        if con: con.close()
 
 @app.post("/sync/pull")
 def pull_changes(req: SyncPullRequest):
@@ -162,6 +300,9 @@ def push_changes(req: SyncPushRequest):
                                 cur.execute(f"UPDATE clients SET {clauses} WHERE id=?", (*data_to_save.values(), exists[0]))
                                 data_changed = True
                                 stats["clients"] += 1
+                                server_log(f"SERVER SYNC: Updated client {contract_num} (del={data.get('is_deleted')})")
+                            else:
+                                server_log(f"SERVER SYNC: Ignored client {contract_num} (existing modified at {existing_ts} >= incoming {incoming_ts})")
                         else:
                             cols = ", ".join(data_to_save.keys())
                             placeholders = ", ".join(["?" for _ in data_to_save])
@@ -190,7 +331,9 @@ def push_changes(req: SyncPushRequest):
                                     cur.execute(f"UPDATE devices SET {clauses} WHERE id=? ", (*data_to_save.values(), exists[0]))
                                     data_changed = True
                                     stats["devices"] += 1
-                                    server_log(f"SERVER SYNC: Updated device {serial}")
+                                    server_log(f"SERVER SYNC: Updated device {serial} (del={data.get('is_deleted')})")
+                                else:
+                                    server_log(f"SERVER SYNC: Ignored device {serial} (existing modified at {existing_ts} >= incoming {incoming_ts})")
                             else:
                                 cols = ", ".join(data_to_save.keys())
                                 placeholders = ", ".join(["?" for _ in data_to_save])

@@ -118,7 +118,37 @@ def clean_xml_string(s):
     # We use a whitelist approach for maximum safety.
     return "".join(c for c in s if ord(c) in (0x9, 0xA, 0xD) or (0x20 <= ord(c) <= 0xD7FF) or (0xE000 <= ord(c) <= 0xFFFD))
 
-def surgical_replace(para, placeholder, replacement, once=False):
+def insert_date_field_into_run(run, date_format):
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    
+    rPr = run._r.get_or_add_rPr()
+    lang = OxmlElement('w:lang')
+    lang.set(qn('w:val'), 'bg-BG')
+    rPr.append(lang)
+    
+    fldChar1 = OxmlElement('w:fldChar')
+    fldChar1.set(qn('w:fldCharType'), 'begin')
+    run._r.append(fldChar1)
+    
+    instrText = OxmlElement('w:instrText')
+    instrText.set(qn('xml:space'), 'preserve')
+    instrText.text = f' DATE \\@ "{date_format}" \\l 1026 \\* MERGEFORMAT '
+    run._r.append(instrText)
+    
+    fldChar2 = OxmlElement('w:fldChar')
+    fldChar2.set(qn('w:fldCharType'), 'separate')
+    run._r.append(fldChar2)
+    
+    t = OxmlElement('w:t')
+    t.text = "ДД.ММ.ГГГГ"
+    run._r.append(t)
+    
+    fldChar3 = OxmlElement('w:fldChar')
+    fldChar3.set(qn('w:fldCharType'), 'end')
+    run._r.append(fldChar3)
+
+def surgical_replace(para, placeholder, replacement, once=False, date_format=None):
     """
     The most robust way to replace text in python-docx:
     1. If placeholder is in a single run, replace it there.
@@ -128,20 +158,37 @@ def surgical_replace(para, placeholder, replacement, once=False):
     if placeholder not in para.text:
         return False
         
-    replacement = clean_xml_string(replacement)
+    if not date_format:
+        replacement = clean_xml_string(replacement)
     
     # Try one-run replacement first
     for run in para.runs:
         if placeholder in run.text:
-            run.text = run.text.replace(placeholder, replacement, 1 if once else -1)
+            if not date_format:
+                run.text = run.text.replace(placeholder, replacement, 1 if once else -1)
+            else:
+                from docx.oxml import OxmlElement
+                from docx.oxml.ns import qn
+                parts = run.text.split(placeholder, 1 if once else -1)
+                run.text = ""
+                for i, part in enumerate(parts):
+                    if part:
+                        t = OxmlElement('w:t')
+                        t.set(qn('xml:space'), 'preserve')
+                        t.text = part
+                        run._r.append(t)
+                    if i < len(parts) - 1:
+                        insert_date_field_into_run(run, date_format)
             return True
             
     # Handle split runs (the 'Safe Merge' strategy)
     full_text = para.text
+    temp_ph = "___TEMP_PH___" if date_format else replacement
+
     if once:
-        new_text = full_text.replace(placeholder, replacement, 1)
+        new_text = full_text.replace(placeholder, temp_ph, 1)
     else:
-        new_text = full_text.replace(placeholder, replacement)
+        new_text = full_text.replace(placeholder, temp_ph)
         
     if new_text != full_text and para.runs:
         # Move all text to run 0, clear others. 
@@ -149,34 +196,49 @@ def surgical_replace(para, placeholder, replacement, once=False):
         para.runs[0].text = new_text
         for i in range(1, len(para.runs)):
             para.runs[i].text = ""
+
+        if date_format:
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+            parts = para.runs[0].text.split(temp_ph)
+            para.runs[0].text = ""
+            for i, part in enumerate(parts):
+                if part:
+                    t = OxmlElement('w:t')
+                    t.set(qn('xml:space'), 'preserve')
+                    t.text = part
+                    para.runs[0]._r.append(t)
+                if i < len(parts) - 1:
+                    insert_date_field_into_run(para.runs[0], date_format)
+
         return True
         
     return False
 
-def replace_text_once(doc, placeholder, replacement):
+def replace_text_once(doc, placeholder, replacement, date_format=None):
     """Surgical replacement of the first occurrence found in the document"""
     for para in doc.paragraphs:
-        if surgical_replace(para, placeholder, replacement, once=True):
+        if surgical_replace(para, placeholder, replacement, once=True, date_format=date_format):
             return True
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    if surgical_replace(para, placeholder, replacement, once=True):
+                    if surgical_replace(para, placeholder, replacement, once=True, date_format=date_format):
                         return True
     return False
 
-def replace_text_all(doc, placeholder, replacement):
+def replace_text_all(doc, placeholder, replacement, date_format=None):
     """Surgical replacement of all occurrences in the document"""
     found = False
     for para in doc.paragraphs:
-        if surgical_replace(para, placeholder, replacement, once=False):
+        if surgical_replace(para, placeholder, replacement, once=False, date_format=date_format):
             found = True
     for table in doc.tables:
         for row in table.rows:
             for cell in row.cells:
                 for para in cell.paragraphs:
-                    if surgical_replace(para, placeholder, replacement, once=False):
+                    if surgical_replace(para, placeholder, replacement, once=False, date_format=date_format):
                         found = True
     return found
 
@@ -406,20 +468,23 @@ def generate_service_contract(client_data: Dict[str, Any], devices: List[Dict[st
     
     mappings = {
         "{1}": c_num,
-        "{2}": format_date_bg(now, 'A'),
         "{3}": c_name,
         "{4}": c_addr,
         "{5}": eik_val,
         "{6}": format_phone_custom(client_data.get('phone1', '')),
         "{7}": mol,
-        "{8}": format_date_bg(now, 'B'),
         "{9}": c_num,
-        "{10}": format_date_bg(now, 'A'),
-        "{46}": format_date_bg(now, 'B'),
         "{47}": c_num,
-        "{48}": format_date_bg(now, 'A'),
-        "{49}": format_date_bg(now, 'C'),
         "{50}": "Г" if start_date.date() == now.date() else "А"
+    }
+
+    date_mappings = {
+        "{2}": "dd/MM/yy 'г.'",
+        "{8}": "d MMMM yyyy 'г.'",
+        "{10}": "dd/MM/yy 'г.'",
+        "{46}": "d MMMM yyyy 'г.'",
+        "{48}": "dd/MM/yy 'г.'",
+        "{49}": "dddd, d MMMM yyyy 'г.'"
     }
 
     # Device Mapping (11-45, grouped by 7 fields per device)
@@ -457,6 +522,9 @@ def generate_service_contract(client_data: Dict[str, Any], devices: List[Dict[st
     for ph, val in mappings.items():
         replace_text_all(doc, ph, clean_xml_string(val))
 
+    for ph, fmt in date_mappings.items():
+        replace_text_all(doc, ph, "", date_format=fmt)
+
     # Save
     safe_company = "".join([c for c in c_name if c.isalnum() or c in (' ', '-', '_')]).strip()
     output_filename = f"{c_num} {safe_company}.docx"
@@ -490,7 +558,6 @@ def generate_registration_certificate(client_data, device, template_path, output
         start_fmt = str(c_start)
 
     mappings = {
-        "{1}": date_f1,
         "{2}": clean_numeric(client_data.get('eik', '')),
         "{3}": str(client_data.get('company_name', '')),
         "{4}": str(client_data.get('address', '')),
@@ -501,13 +568,20 @@ def generate_registration_certificate(client_data, device, template_path, output
         "{9}": sn,
         "{10}": clean_numeric(device.get('fiscal_memory', '')),
         "{11}": str(client_data.get('contract_number', '')),
-        "{12}": date_f12,
         "{13}": clean_numeric(device.get('fdrid', '')),
         "{14}": start_fmt
+    }
+
+    date_mappings = {
+        "{1}": "dd/MM/yyyy'г.'",
+        "{12}": "dd/MM/yyyy 'г.'"
     }
     
     for ph, val in mappings.items():
         replace_text_all(doc, ph, clean_xml_string(val))
+
+    for ph, fmt in date_mappings.items():
+        replace_text_all(doc, ph, "", date_format=fmt)
         
     output_filename = f"RegCert_{sn}.docx"
     output_path = os.path.join(output_dir, output_filename)
@@ -583,7 +657,6 @@ def generate_deregistration_protocol(proto_data, template_path, output_dir):
         date_f8 = now.strftime('%d.%m.%Y г.') # Fallback
         
     mappings = {
-        "{1}": now.strftime('%d.%m.%Y г.'),
         "{2}": now.strftime('%H:%M'),
         "{3}": str(proto_data.get('eik', '')),
         "{4}": f"{proto_data.get('company_name', '')}, {proto_data.get('address', '')}",
@@ -614,9 +687,16 @@ def generate_deregistration_protocol(proto_data, template_path, output_dir):
         "{29}": f"{manu_name}, гр. {manu_city}",
         "{30}": f"{proto_data.get('company_name', '')}, гр. София" # Defaulting to Sofia or client city
     }
+
+    date_mappings = {
+        "{1}": "dd.MM.yyyy 'г.'"
+    }
     
     for ph, val in mappings.items():
         replace_text_all(doc, ph, clean_xml_string(val))
+
+    for ph, fmt in date_mappings.items():
+        replace_text_all(doc, ph, "", date_format=fmt)
         
     output_filename = f"DeregProtocol_{sn}.docx"
     output_path = os.path.join(output_dir, output_filename)
