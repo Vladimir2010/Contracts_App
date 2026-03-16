@@ -498,10 +498,13 @@ class MainWindow(QMainWindow):
             self.hotkey_mgr.hotkey_triggered.connect(self.on_hotkey_triggered)
             self.hotkey_mgr.start()
 
-    def perform_update_check(self):
-        """Silently checks for updates in the background. If found, prompts the user."""
+    def perform_update_check(self, manual=False):
+        """Checks for updates. If manual=True, shows a message even if no updates found."""
         try:
-            log_message("Извикване на check_for_updates()...")
+            if manual:
+                self.statusBar.showMessage("Проверка за обновления...", 5000)
+            
+            log_message(f"Извикване на check_for_updates(manual={manual})...")
             has_update, new_version, url, notes = check_for_updates()
             log_message(f"Резултат: has_update={has_update}")
             
@@ -546,10 +549,12 @@ class MainWindow(QMainWindow):
                         
                         progress.close()
                         log_message("КРАЙ: Инсталаторът трябва да е стартиран.")
-                except Exception as e:
-                    log_message(f"Грешка при показване на диалога: {e}")
-                    import traceback
-                    log_message(traceback.format_exc())
+                except Exception as ex:
+                    log_message(f"Грешка при показване на прозореца за ъпдейт: {ex}")
+            
+            elif manual:
+                QMessageBox.information(self, "Обновяване", 
+                    f"Имате последната версия на програмата (v{CURRENT_APP_VERSION}).")
                     
         except Exception as e:
             log_message(f"Грешка в perform_update_check: {e}")
@@ -1232,9 +1237,24 @@ class MainWindow(QMainWindow):
 
         self.toolbar.addSeparator()
 
-        action_about = QAction("ℹ️ За програмата", self)
-        action_about.triggered.connect(self.show_about)
-        self.toolbar.addAction(action_about)
+        action_about_menu = QAction("ℹ️ За програмата", self)
+        action_about_menu.triggered.connect(self.show_about)
+        
+        action_check_updates = QAction("🔄 Проверка за обновления", self)
+        action_check_updates.triggered.connect(lambda: self.perform_update_check(manual=True))
+        
+        # QToolButton for About with Menu
+        about_tool_btn = QToolButton(self)
+        about_tool_btn.setText("ℹ️ За програмата")
+        about_tool_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        about_tool_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        
+        about_menu = QMenu(self)
+        about_menu.addAction(action_about_menu)
+        about_menu.addAction(action_check_updates)
+        about_tool_btn.setMenu(about_menu)
+        
+        self.toolbar.addWidget(about_tool_btn)
         
         # New: Tab switching actions for clarity
         self.toolbar.addSeparator()

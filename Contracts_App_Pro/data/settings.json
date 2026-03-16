@@ -31,7 +31,7 @@
     "email_7d_ahead": true,
     "email_14d_ahead": true,
     "email_30d_ahead": true,
-    "last_alert_date": "2026-03-12"
+    "last_alert_date": "2026-03-16"
   },
   "autorun": true,
   "backup": {

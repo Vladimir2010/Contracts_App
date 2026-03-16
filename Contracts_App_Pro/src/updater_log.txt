@@ -46,3 +46,57 @@
 2026-03-12 15:34:20 - Версия на сървъра: 1.1.4
 2026-03-12 15:34:20 - Няма нова версия.
 2026-03-12 15:34:20 - Резултат: has_update=False
+2026-03-16 18:57:19 - Извикване на check_for_updates(manual=False)...
+2026-03-16 18:57:19 - --- СТАРТ НА ПРОВЕРКА (API) ---
+2026-03-16 18:57:19 - Текуща версия: 1.1.4
+2026-03-16 18:57:19 - API URL: https://api.github.com/repos/Vladimir2010/ContractsApp_Releases/releases/latest
+2026-03-16 18:57:19 - Изпращане на заявка към GitHub API...
+2026-03-16 18:57:20 - КРИТИЧНА ГРЕШКА API: HTTP Error 404: Not Found
+2026-03-16 18:57:20 - Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\updater_client.py", line 51, in check_for_updates
+    response = urllib.request.urlopen(req, timeout=10)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 189, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 495, in open
+    response = meth(req, response)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 604, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 533, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 466, in _call_chain
+    result = func(*args)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 613, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 404: Not Found
+
+2026-03-16 18:57:20 - Резултат: has_update=False
+2026-03-16 18:57:28 - Извикване на check_for_updates(manual=True)...
+2026-03-16 18:57:28 - --- СТАРТ НА ПРОВЕРКА (API) ---
+2026-03-16 18:57:28 - Текуща версия: 1.1.4
+2026-03-16 18:57:28 - API URL: https://api.github.com/repos/Vladimir2010/ContractsApp_Releases/releases/latest
+2026-03-16 18:57:28 - Изпращане на заявка към GitHub API...
+2026-03-16 18:57:29 - КРИТИЧНА ГРЕШКА API: HTTP Error 404: Not Found
+2026-03-16 18:57:29 - Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\updater_client.py", line 51, in check_for_updates
+    response = urllib.request.urlopen(req, timeout=10)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 189, in urlopen
+    return opener.open(url, data, timeout)
+           ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 495, in open
+    response = meth(req, response)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 604, in http_response
+    response = self.parent.error(
+        'http', request, response, code, msg, hdrs)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 533, in error
+    return self._call_chain(*args)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 466, in _call_chain
+    result = func(*args)
+  File "C:\Users\Dell\AppData\Local\Programs\Python\Python313\Lib\urllib\request.py", line 613, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 404: Not Found
+
+2026-03-16 18:57:29 - Резултат: has_update=False
