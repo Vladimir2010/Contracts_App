@@ -3,11 +3,13 @@
 [Setup]
 AppId={{D3E5D7B2-C7D1-4E8F-A6B1-3E2A5D7C9F01}
 AppName=Сервиз
-AppVersion=1.1.5
+AppVersion=1.1.6
 AppPublisher=VladPos Systems
 DefaultDirName={autopf}\ContractsAppPro
 DefaultGroupName=Contracts App Pro
 AllowNoIcons=yes
+CloseApplications=force
+AppMutex=ContractsAppProMutex
 OutputDir=installer
 OutputBaseFilename=ContractsApp_Setup
 SetupIconFile=resources\vladpos_logo.ico

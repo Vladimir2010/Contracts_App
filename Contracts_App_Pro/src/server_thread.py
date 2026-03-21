@@ -97,7 +97,7 @@ def get_devices_api(api_key: str = Depends(get_api_key)):
         con = get_connection()
         cur = con.cursor()
         cur.execute("""
-            SELECT d.id, c.contract_number, c.status, c.company_name, c.eik,
+            SELECT d.id, c.contract_number, d.status, c.company_name, c.eik,
                    c.vat_registered, c.mol, c.city, c.postal_code, c.address,
                    c.phone1, c.phone2, c.contract_start, c.contract_expiry,
                    d.object_name, d.object_address, d.object_phone, d.model,

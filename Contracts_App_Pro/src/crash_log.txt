@@ -163,3 +163,17 @@ TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance 
 ==================================================
 Timestamp: 2026-03-12 14:58:12
 TypeError: unable to convert a C++ 'QSystemTrayIcon::ActivationReason' instance to a Python object
+
+==================================================
+Timestamp: 2026-03-17 20:16:41
+Traceback (most recent call last):
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 2447, in <module>
+    main()
+    ~~~~^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 2405, in main
+    splash.setProgress(15)
+    ~~~~~~~~~~~~~~~~~~^^^^
+  File "C:\Users\Dell\PycharmProjects\Contracts_App\contracts_app_pro\src\main.py", line 385, in setProgress
+    current_value = self.progressBar.value()
+                    ^^^^^^^^^^^^^^^^
+AttributeError: 'SplashScreen' object has no attribute 'progressBar'

@@ -1,8 +1,19 @@
 import os
+import locale
+import json
+import collections
 from datetime import datetime, timedelta
 from docx import Document
+from docx.shared import Pt, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from typing import Dict, Any, List
-import locale
+import psutil
+try:
+    import pythoncom
+    import win32com.client
+except ImportError:
+    pythoncom = None
+    win32com = None
 try:
     from path_utils import get_app_root
 except ImportError:
@@ -65,25 +76,71 @@ def get_prof_model(model):
     
     return mappings.get(m, m)
 
-def docx_to_pdf(docx_path):
-    """Convert DOCX to PDF using win32com on Windows"""
+def kill_stuck_word_processes():
+    """Kill any hidden WINWORD.EXE processes that might be leaking memory"""
+    killed = 0
+    try:
+        for proc in psutil.process_iter(['pid', 'name']):
+            if proc.info['name'] and proc.info['name'].lower() == 'winword.exe':
+                try:
+                    proc.kill()
+                    killed += 1
+                except:
+                    pass
+    except Exception as e:
+        print(f"Cleanup error: {e}")
+    return killed
+
+def docx_to_pdf(docx_path, retry=True):
+    """Convert DOCX to PDF using win32com with robust cleanup"""
     if not os.path.exists(docx_path):
         return None
     
     pdf_path = docx_path.replace(".docx", ".pdf")
+    if not pythoncom or not win32com:
+        raise ImportError("Microsoft Word (win32com) is not installed or available.")
+        
+    pythoncom.CoInitialize()
+    word = None
+    doc = None
     try:
-        import win32com.client
-        import pythoncom
-        pythoncom.CoInitialize()
         word = win32com.client.Dispatch("Word.Application")
-        doc = word.Documents.Open(os.path.abspath(docx_path))
-        doc.SaveAs(os.path.abspath(pdf_path), FileFormat=17) # 17 is for PDF
-        doc.Close()
-        word.Quit()
+        word.Visible = False
+        word.DisplayAlerts = 0 
+        
+        docx_abs = os.path.abspath(docx_path)
+        pdf_abs = os.path.abspath(pdf_path)
+        
+        doc = word.Documents.Open(docx_abs, ReadOnly=True)
+        doc.SaveAs(pdf_abs, FileFormat=17) # 17 is wdFormatPDF
+        doc.Close(False)
+        doc = None
         return pdf_path
     except Exception as e:
-        print(f"PDF conversion error: {e}")
+        error_msg = str(e)
+        print(f"PDF conversion error: {repr(e)}")
+        
+        # -2147024882 is Out of Memory or RPC server unavailable (often caused by stuck Word processes)
+        if "-2147024882" in error_msg or "Not enough memory" in error_msg:
+            print("Detected COM memory issue. Cleaning up stuck Word processes...")
+            if retry and kill_stuck_word_processes() > 0:
+                print("Retrying PDF conversion...")
+                return docx_to_pdf(docx_path, retry=False)
+                
+        if "Invalid class string" in error_msg or "0x800401f3" in error_msg:
+            print("Microsoft Word appears to be not installed.")
         return None
+    finally:
+        try:
+            if doc: doc.Close(False)
+        except: pass
+        try:
+            if word: word.Quit()
+        except: pass
+        try:
+            pythoncom.CoUninitialize()
+        except: pass
+
 
 # Try to set Bulgarian locale for dates
 try:
@@ -334,32 +391,7 @@ def format_date_bg(dt, fmt_type='A'):
         return dt.strftime('%d.%m.%Y г.')
     return dt.strftime('%d.%m.%Y')
 
-def docx_to_pdf(docx_path):
-    """Convert .docx to .pdf using pywin32"""
-    import win32com.client
-    import pythoncom
-    
-    pythoncom.CoInitialize()
-    word = None
-    doc = None
-    try:
-        word = win32com.client.DispatchEx("Word.Application")
-        word.Visible = False
-        
-        docx_path = os.path.abspath(docx_path)
-        pdf_path = docx_path.rsplit('.', 1)[0] + ".pdf"
-        
-        doc = word.Documents.Open(docx_path, ReadOnly=True)
-        # wdFormatPDF = 17
-        doc.SaveAs2(pdf_path, FileFormat=17)
-        doc.Close(False)
-        return pdf_path
-    except Exception as e:
-        print(f"Error converting to PDF: {e}")
-        return None
-    finally:
-        if word: word.Quit()
-        pythoncom.CoUninitialize()
+# docx_to_pdf unified above
 
 def number_to_words_bg(amount, currency="BGN"):
     """
@@ -551,13 +583,19 @@ def generate_registration_certificate(client_data, device, template_path, output
     date_f12 = now.strftime('%d/%m/%Y г.')
     
     c_start = client_data.get('contract_start', '')
-    try:
-        dt_start = datetime.strptime(c_start, '%Y-%m-%d')
-        start_fmt = dt_start.strftime('%d.%m.%Y г.')
-    except:
-        start_fmt = str(c_start)
+    dt_target = now
+    if c_start:
+        try:
+            dt_target = datetime.strptime(c_start, '%Y-%m-%d')
+        except:
+            pass
+            
+    start_fmt = dt_target.strftime('%d.%m.%Y г.')
+    date_f1 = dt_target.strftime('%d/%m/%Yг.')
+    date_f12 = dt_target.strftime('%d/%m/%Y г.')
 
     mappings = {
+        "{1}": date_f1,
         "{2}": clean_numeric(client_data.get('eik', '')),
         "{3}": str(client_data.get('company_name', '')),
         "{4}": str(client_data.get('address', '')),
@@ -568,14 +606,12 @@ def generate_registration_certificate(client_data, device, template_path, output
         "{9}": sn,
         "{10}": clean_numeric(device.get('fiscal_memory', '')),
         "{11}": str(client_data.get('contract_number', '')),
+        "{12}": date_f12,
         "{13}": clean_numeric(device.get('fdrid', '')),
         "{14}": start_fmt
     }
 
-    date_mappings = {
-        "{1}": "dd/MM/yyyy'г.'",
-        "{12}": "dd/MM/yyyy 'г.'"
-    }
+    date_mappings = {}
     
     for ph, val in mappings.items():
         replace_text_all(doc, ph, clean_xml_string(val))

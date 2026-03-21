@@ -67,7 +67,6 @@ def init_db():
             CREATE TABLE IF NOT EXISTS clients (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 contract_number TEXT NOT NULL,
-                status TEXT,
                 contract_start DATE,
                 contract_expiry DATE,
                 company_name TEXT NOT NULL,
@@ -108,6 +107,7 @@ def init_db():
                 last_renewed_at DATE,
                 created_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 updated_at TIMESTAMP DEFAULT (datetime('now', 'localtime')),
+                status TEXT DEFAULT 'активен',
                 last_modified TIMESTAMP DEFAULT (datetime('now', 'localtime')),
                 is_deleted INTEGER DEFAULT 0,
                 FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
@@ -271,6 +271,7 @@ def init_db():
         # 2. Sequential Migrations (Using ensure_column_exists for total isolation)
         
         # Devices migrations
+        ensure_column_exists("devices", "status", "TEXT", "активен")
         ensure_column_exists("devices", "created_at", "TIMESTAMP", "datetime('now', 'localtime')")
         ensure_column_exists("devices", "updated_at", "TIMESTAMP", "datetime('now', 'localtime')")
         ensure_column_exists("devices", "nra_report_enabled", "INTEGER DEFAULT 1")
@@ -282,6 +283,10 @@ def init_db():
         ensure_column_exists("devices", "last_renewed_at", "DATE")
         ensure_column_exists("devices", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
         ensure_column_exists("devices", "is_deleted", "INTEGER DEFAULT 0")
+
+        # Migrate status from clients to devices if devices.status is default and client has status
+        cur.execute("UPDATE devices SET status = (SELECT status FROM clients WHERE clients.id = devices.client_id) WHERE status = 'активен' AND EXISTS (SELECT 1 FROM clients WHERE clients.id = devices.client_id AND clients.status IS NOT NULL)")
+        con.commit()
 
         # Clients migrations
         ensure_column_exists("clients", "last_modified", "TIMESTAMP", "datetime('now', 'localtime')")
@@ -403,14 +408,13 @@ def add_client(data: Dict[str, Any]) -> int:
         
         cur.execute("""
             INSERT INTO clients (
-                contract_number, status, contract_start, contract_expiry,
+                contract_number, contract_start, contract_expiry,
                 company_name, city, postal_code, address,
                 eik, vat_registered, mol, phone1, phone2,
                 last_modified
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             data.get('contract_number'),
-            data.get('status'),
             data.get('contract_start'),
             data.get('contract_expiry'),
             data.get('company_name'),
@@ -456,13 +460,13 @@ def update_client(client_id: int, data: Dict[str, Any], user_id: Optional[int] =
         
         cur.execute("""
             UPDATE clients SET
-                contract_number = ?, status = ?, contract_start = ?, contract_expiry = ?,
+                contract_number = ?, contract_start = ?, contract_expiry = ?,
                 company_name = ?, city = ?, postal_code = ?, address = ?,
                 eik = ?, vat_registered = ?, mol = ?, phone1 = ?, phone2 = ?,
                 last_modified = datetime('now', 'localtime')
             WHERE id = ?
         """, (
-            data.get('contract_number'), data.get('status'),
+            data.get('contract_number'),
             data.get('contract_start'), data.get('contract_expiry'),
             data.get('company_name'), data.get('city'), data.get('postal_code'),
             data.get('address'), data.get('eik'), data.get('vat_registered'),
@@ -514,7 +518,7 @@ def get_client_by_contract(contract_number: str) -> Optional[Dict[str, Any]]:
         cur = con.cursor()
         
         cur.execute("""
-            SELECT id, contract_number, status, contract_start, contract_expiry,
+            SELECT id, contract_number, contract_start, contract_expiry,
                    company_name, city, postal_code, address,
                    eik, vat_registered, mol, phone1, phone2
             FROM clients
@@ -528,18 +532,17 @@ def get_client_by_contract(contract_number: str) -> Optional[Dict[str, Any]]:
             return {
                 'id': row[0],
                 'contract_number': row[1],
-                'status': row[2],
-                'contract_start': row[3],
-                'contract_expiry': row[4],
-                'company_name': row[5],
-                'city': row[6],
-                'postal_code': row[7],
-                'address': row[8],
-                'eik': row[9],
-                'vat_registered': row[10],
-                'mol': row[11],
-                'phone1': row[12],
-                'phone2': row[13]
+                'contract_start': row[2],
+                'contract_expiry': row[3],
+                'company_name': row[4],
+                'city': row[5],
+                'postal_code': row[6],
+                'address': row[7],
+                'eik': row[8],
+                'vat_registered': row[9],
+                'mol': row[10],
+                'phone1': row[11],
+                'phone2': row[12]
             }
         return None
     except Exception as e:
@@ -560,7 +563,7 @@ def get_devices_by_contract(contract_number: str) -> List[Dict[str, Any]]:
             SELECT d.id, d.fdrid, d.euro_done, d.object_name, d.object_address, 
                    d.object_phone, d.model, d.certificate_number, 
                    d.certificate_expiry, d.serial_number, d.fiscal_memory,
-                   c.contract_expiry
+                   c.contract_expiry, d.status
             FROM devices d
             JOIN clients c ON c.id = d.client_id
             WHERE c.contract_number = ? AND d.is_deleted = 0
@@ -582,7 +585,8 @@ def get_devices_by_contract(contract_number: str) -> List[Dict[str, Any]]:
                 'certificate_expiry': row[8],
                 'serial_number': row[9],
                 'fiscal_memory': row[10],
-                'contract_expiry': row[11]
+                'contract_expiry': row[11],
+                'status': row[12] if len(row) > 12 else 'активен'
             })
         return devices
     except Exception as e:
@@ -654,8 +658,8 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
             object_phone, model, certificate_number, certificate_expiry,
             serial_number, fiscal_memory,
             nra_report_enabled, nra_report_month, nra_td, bim_model, bim_date,
-            maintenance_price, last_renewed_at, last_modified
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            maintenance_price, status, last_renewed_at, last_modified
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         client_id,
         data.get('fdrid'),
@@ -674,6 +678,7 @@ def add_device(client_id: int, data: Dict[str, Any]) -> int:
         data.get('bim_model'),
         data.get('bim_date'),
         data.get('maintenance_price', 0),
+        data.get('status', 'активен'),
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     ))
@@ -705,14 +710,13 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
     # Update client data
     cur.execute("""
         UPDATE clients SET
-            contract_number = ?, status = ?, contract_start = ?, contract_expiry = ?,
+            contract_number = ?, contract_start = ?, contract_expiry = ?,
             company_name = ?, city = ?, postal_code = ?, address = ?,
             eik = ?, vat_registered = ?, mol = ?, phone1 = ?, phone2 = ?,
             last_modified = ?
         WHERE id = ?
     """, (
         client_data.get('contract_number'),
-        client_data.get('status'),
         client_data.get('contract_start'),
         client_data.get('contract_expiry'),
         client_data.get('company_name'),
@@ -735,7 +739,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
             object_phone = ?, model = ?, certificate_number = ?, certificate_expiry = ?,
             serial_number = ?, fiscal_memory = ?,
             nra_report_enabled = ?, nra_report_month = ?, nra_td = ?, bim_model = ?, bim_date = ?,
-            maintenance_price = ?,
+            maintenance_price = ?, status = ?,
             updated_at = datetime('now', 'localtime'),
             last_modified = ?
         WHERE id = ?
@@ -756,6 +760,7 @@ def update_device(device_id: int, client_data: Dict[str, Any], device_data: Dict
         device_data.get('bim_model'),
         device_data.get('bim_date'),
         device_data.get('maintenance_price', 0),
+        device_data.get('status', 'активен'),
         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         device_id
     ))
@@ -793,12 +798,12 @@ def get_device_full(device_id: int) -> Optional[Dict[str, Any]]:
     cur.execute("""
         SELECT 
             d.id, d.client_id,
-            c.contract_number, c.status, c.contract_start, c.contract_expiry,
+            c.contract_number, c.contract_start, c.contract_expiry,
             c.company_name, c.city, c.postal_code, c.address,
             c.eik, c.vat_registered, c.mol, c.phone1, c.phone2,
             d.fdrid, d.euro_done, d.object_name, d.object_address,
             d.object_phone, d.model, d.certificate_number, d.certificate_expiry,
-            d.serial_number, d.fiscal_memory,
+            d.serial_number, d.fiscal_memory, d.status,
             d.nra_report_enabled, d.nra_report_month, d.nra_td, d.bim_model, d.bim_date,
             d.created_at, d.updated_at, d.maintenance_price, d.last_renewed_at
         FROM devices d
@@ -812,14 +817,15 @@ def get_device_full(device_id: int) -> Optional[Dict[str, Any]]:
     if row:
         return {
             'device_id': row[0], 'client_id': row[1], 'contract_number': row[2],
-            'status': row[3], 'contract_start': row[4], 'contract_expiry': row[5],
-            'company_name': row[6], 'city': row[7], 'postal_code': row[8],
-            'address': row[9], 'eik': row[10], 'vat_registered': row[11],
-            'mol': row[12], 'phone1': row[13], 'phone2': row[14],
-            'fdrid': row[15], 'euro_done': bool(row[16]), 'object_name': row[17],
-            'object_address': row[18], 'object_phone': row[19], 'model': row[20],
-            'certificate_number': row[21], 'certificate_expiry': row[22],
-            'serial_number': row[23], 'fiscal_memory': row[24],
+            'contract_start': row[3], 'contract_expiry': row[4],
+            'company_name': row[5], 'city': row[6], 'postal_code': row[7],
+            'address': row[8], 'eik': row[9], 'vat_registered': row[10],
+            'mol': row[11], 'phone1': row[12], 'phone2': row[13],
+            'fdrid': row[14], 'euro_done': bool(row[15]), 'object_name': row[16],
+            'object_address': row[17], 'object_phone': row[18], 'model': row[19],
+            'certificate_number': row[20], 'certificate_expiry': row[21],
+            'serial_number': row[22], 'fiscal_memory': row[23],
+            'status': row[24],
             'nra_report_enabled': bool(row[25]), 'nra_report_month': row[26],
             'nra_td': row[27], 'bim_model': row[28], 'bim_date': row[29],
             'created_at': row[30], 'updated_at': row[31],
@@ -838,7 +844,7 @@ def get_all_devices() -> List[Tuple]:
         SELECT 
             d.id,                 -- 0
             c.contract_number,    -- 1
-            c.status,             -- 2
+            d.status,             -- 2
             c.company_name,       -- 3
             c.eik,                -- 4
             c.vat_registered,     -- 5
@@ -880,12 +886,12 @@ def get_devices_for_nra_report() -> List[Dict[str, Any]]:
     cur.execute("""
         SELECT 
             d.id, d.client_id,
-            c.contract_number, c.status, c.contract_start, c.contract_expiry,
+            c.contract_number, c.contract_start, c.contract_expiry,
             c.company_name, c.city, c.postal_code, c.address,
             c.eik, c.vat_registered, c.mol, c.phone1, c.phone2,
             d.fdrid, d.euro_done, d.object_name, d.object_address,
             d.object_phone, d.model, d.certificate_number, d.certificate_expiry,
-            d.serial_number, d.fiscal_memory,
+            d.serial_number, d.fiscal_memory, d.status,
             d.nra_report_enabled, d.nra_report_month, d.nra_td, d.bim_model, d.bim_date,
             d.created_at, d.updated_at
         FROM devices d
@@ -901,14 +907,15 @@ def get_devices_for_nra_report() -> List[Dict[str, Any]]:
     for row in rows:
         results.append({
             'device_id': row[0], 'client_id': row[1], 'contract_number': row[2],
-            'status': row[3], 'contract_start': row[4], 'contract_expiry': row[5],
-            'company_name': row[6], 'city': row[7], 'postal_code': row[8],
-            'address': row[9], 'eik': row[10], 'vat_registered': row[11],
-            'mol': row[12], 'phone1': row[13], 'phone2': row[14],
-            'fdrid': row[15], 'euro_done': bool(row[16]), 'object_name': row[17],
-            'object_address': row[18], 'object_phone': row[19], 'model': row[20],
-            'certificate_number': row[21], 'certificate_expiry': row[22],
-            'serial_number': row[23], 'fiscal_memory': row[24],
+            'contract_start': row[3], 'contract_expiry': row[4],
+            'company_name': row[5], 'city': row[6], 'postal_code': row[7],
+            'address': row[8], 'eik': row[9], 'vat_registered': row[10],
+            'mol': row[11], 'phone1': row[12], 'phone2': row[13],
+            'fdrid': row[14], 'euro_done': bool(row[15]), 'object_name': row[16],
+            'object_address': row[17], 'object_phone': row[18], 'model': row[19],
+            'certificate_number': row[20], 'certificate_expiry': row[21],
+            'serial_number': row[22], 'fiscal_memory': row[23],
+            'status': row[24],
             'nra_report_enabled': bool(row[25]), 'nra_report_month': row[26],
             'nra_td': row[27], 'bim_model': row[28], 'bim_date': row[29],
             'created_at': row[30], 'updated_at': row[31]
@@ -927,7 +934,7 @@ def search_devices(filters: Dict[str, Any]) -> List[Tuple]:
         SELECT 
             d.id,                 -- 0
             c.contract_number,    -- 1
-            c.status,             -- 2
+            d.status,             -- 2
             c.company_name,       -- 3
             c.eik,                -- 4
             c.vat_registered,     -- 5
@@ -1853,25 +1860,29 @@ def get_db_stats() -> Dict[str, Any]:
     def status_is_expired(status_val):
         return f"(LOWER({status_val}) = 'изтекъл' OR {status_val} = 'Изтекъл')"
 
-    # 1. Active Contracts: expiry >= tomorrow
-    cur.execute("""
-        SELECT COUNT(*) FROM clients 
-        WHERE (contract_expiry IS NOT NULL AND contract_expiry >= ?)
+    # 1. Active Contracts (Clients with at least one active device and valid contract)
+    cur.execute(f"""
+        SELECT COUNT(DISTINCT d.client_id) FROM devices d
+        JOIN clients c ON d.client_id = c.id
+        WHERE ({status_is('d.status')})
+        AND (c.contract_expiry IS NOT NULL AND c.contract_expiry >= ?)
     """, (tomorrow_str,))
     stats['active_contracts'] = cur.fetchone()[0]
     
-    # 2. Expired Contracts: status 'изтекъл' OR expiry < today
+    # 2. Expired Contracts (Devices with status 'изтекъл' OR contract expired)
     cur.execute(f"""
-        SELECT COUNT(*) FROM clients 
-        WHERE ({status_is_expired('status')})
-        OR (contract_expiry IS NOT NULL AND contract_expiry < ?)
+        SELECT COUNT(*) FROM devices d
+        JOIN clients c ON d.client_id = c.id
+        WHERE ({status_is_expired('d.status')})
+        OR (c.contract_expiry IS NOT NULL AND c.contract_expiry < ?)
     """, (today_str,))
     stats['expired_contracts'] = cur.fetchone()[0]
     
     # 3. Expiring Soon: today <= expiry <= thirty_days_later
     cur.execute("""
-        SELECT COUNT(*) FROM clients 
-        WHERE (contract_expiry IS NOT NULL AND contract_expiry >= ? AND contract_expiry <= ?)
+        SELECT COUNT(DISTINCT d.client_id) FROM devices d
+        JOIN clients c ON d.client_id = c.id
+        WHERE (c.contract_expiry IS NOT NULL AND c.contract_expiry >= ? AND c.contract_expiry <= ?)
     """, (today_str, thirty_days_later_str))
     stats['expiring_soon'] = cur.fetchone()[0]
     

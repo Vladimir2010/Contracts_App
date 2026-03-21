@@ -376,6 +376,10 @@ class SplashScreen(QSplashScreen):
         """)
         self.progressBar.setValue(0)
 
+    def mousePressEvent(self, event):
+        # Override to prevent closing on click
+        pass
+
     def setProgress(self, value):
         """Smoothly increment progress bar to target value"""
         current_value = self.progressBar.value()
@@ -502,7 +506,8 @@ class MainWindow(QMainWindow):
         """Checks for updates. If manual=True, shows a message even if no updates found."""
         try:
             if manual:
-                self.statusBar.showMessage("Проверка за обновления...", 5000)
+                # Use 0 for timeout to make it persistent until cleared
+                self.statusBar.showMessage("Проверка за обновления...", 0)
             
             log_message(f"Извикване на check_for_updates(manual={manual})...")
             has_update, new_version, url, notes = check_for_updates()
@@ -530,25 +535,33 @@ class MainWindow(QMainWindow):
                     
                     if msg.clickedButton() == yes_btn:
                         log_message("Потребителят избра 'Да'.")
-                        # Proceed with download
+                        
                         from PyQt6.QtWidgets import QProgressDialog
-                        progress = QProgressDialog("Изтегляне на новата версия...", "Отказ", 0, 0, self)
+                        progress = QProgressDialog("Изтегляне на новата версия...", "Отказ", 0, 100, self)
                         progress.setWindowTitle("Обновяване")
                         progress.setWindowModality(Qt.WindowModality.WindowModal)
+                        progress.setAutoClose(True)
                         progress.show()
                         
-                        # Ensure UI updates before heavy download
+                        def update_progress(current, total):
+                            if total > 0:
+                                percent = int((current / total) * 100)
+                                progress.setValue(percent)
+                                progress.setLabelText(f"Изтегляне: {percent}% ({current // 1024} KB / {total // 1024} KB)")
+                            QApplication.processEvents()
+                            if progress.wasCanceled():
+                                raise Exception("Download canceled by user")
+                        
                         QApplication.processEvents() 
                         
-                        # We pass the token if defined in updater_client
                         from updater_client import GITHUB_ACCESS_TOKEN
                         token = GITHUB_ACCESS_TOKEN if "ТУК_ЩЕ" not in GITHUB_ACCESS_TOKEN else None
                         
                         log_message("Старт на download_and_install_update()...")
-                        download_and_install_update(url, token)
+                        download_and_install_update(url, token, progress_callback=update_progress)
                         
                         progress.close()
-                        log_message("КРАЙ: Инсталаторът трябва да е стартиран.")
+                        self.statusBar.clearMessage()
                 except Exception as ex:
                     log_message(f"Грешка при показване на прозореца за ъпдейт: {ex}")
             
@@ -1637,13 +1650,16 @@ class MainWindow(QMainWindow):
             os.startfile(docx_path)
         elif msg.clickedButton() == pdf_btn:
             from contract_generator import docx_to_pdf
-            self.statusBar.showMessage("Конвертиране в PDF...")
+            self.statusBar.showMessage("Конвертиране в PDF (изисква инсталиран Microsoft Word)...")
             pdf_path = docx_to_pdf(docx_path)
             if pdf_path:
                 os.startfile(pdf_path)
                 self.statusBar.showMessage(f"PDF е готов: {pdf_path}", 3000)
             else:
-                QMessageBox.critical(self, "Грешка", "Неуспешно конвертиране в PDF. Опитайте с Word.")
+                QMessageBox.critical(self, "Грешка при PDF", 
+                                   "Неуспешно конвертиране в PDF.\n\n"
+                                   "Уверете се, че имате инсталиран Microsoft Word на компютъра.\n"
+                                   "Ако проблемът продължава, използвайте Word (DOCX) версията.")
                 os.startfile(docx_path)
 
     def generate_selected_certificate(self):

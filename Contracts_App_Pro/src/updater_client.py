@@ -9,7 +9,7 @@ from urllib.error import URLError
 # ==============================================================================
 # КОНФИГУРАЦИЯ ЗА ЪПДЕЙТИТЕ
 # ==============================================================================
-CURRENT_APP_VERSION = "1.1.5"
+CURRENT_APP_VERSION = "1.1.6"
 
 # Информация за Вашето GitHub хранилище
 GITHUB_OWNER = "Vladimir2010"
@@ -31,15 +31,36 @@ def log_message(msg):
 
 def check_for_updates():
     """
-    Проверява GitHub API за най-новия Release.
+    Проверява за нова версия. Първо опитва директно version.json, 
+    ако не успее - ползва GitHub API за последния Release.
     Връща (has_update, new_version, download_url, release_notes)
     """
+    raw_version_url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/version.json"
     api_url = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
     
-    log_message(f"--- СТАРТ НА ПРОВЕРКА (API) ---")
+    log_message(f"--- СТАРТ НА ПРОВЕРКА ---")
     log_message(f"Текуща версия: {CURRENT_APP_VERSION}")
-    log_message(f"API URL: {api_url}")
+    
+    # 1. Опит за взимане от version.json (най-актуална информация)
+    try:
+        log_message(f"Опит за четене на version.json от {raw_version_url}...")
+        req = urllib.request.Request(raw_version_url)
+        req.add_header('User-Agent', 'ContractsApp-Updater')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            server_version = data.get("version", "0.0.0").lstrip('v')
+            download_url = data.get("url", "")
+            release_notes = data.get("release_notes", "")
+            
+            log_message(f"Версия от version.json: {server_version}")
+            
+            if server_version > CURRENT_APP_VERSION:
+                log_message("Намерен е ъпдейт във version.json!")
+                return True, server_version, download_url, release_notes
+    except Exception as e:
+        log_message(f"Предупреждение: Неуспех при четене на version.json ({e}). Проба през GitHub API...")
 
+    # 2. Fallback: GitHub API Release Latest
     try:
         req = urllib.request.Request(api_url)
         req.add_header('User-Agent', 'ContractsApp-Updater')
@@ -48,54 +69,46 @@ def check_for_updates():
             req.add_header('Authorization', f'token {GITHUB_ACCESS_TOKEN}')
             
         log_message("Изпращане на заявка към GitHub API...")
-        response = urllib.request.urlopen(req, timeout=10)
-        
-        data = json.loads(response.read().decode('utf-8'))
-        
-        # GitHub Release таговете обикновено са "v1.1.3", махаме 'v' ако го има
-        tag_name = data.get("tag_name", "0.0.0")
-        server_version = tag_name.lstrip('v')
-        release_notes = data.get("body", "")
-        
-        # Намираме asset-а (инсталатора)
-        assets = data.get("assets", [])
-        download_url = ""
-        for asset in assets:
-            if asset.get("name") == "ContractsApp_Setup.exe":
-                # ВАЖНО: За частни хранилища ни трябва url на самия asset (API url)
-                download_url = asset.get("url")
-                break
-        
-        log_message(f"Версия на сървъра: {server_version}")
-        
-        if server_version > CURRENT_APP_VERSION:
-            if not download_url:
-                log_message("ГРЕШКА: Намерен е ъпдейт, но липсва инсталатор ContractsApp_Setup.exe в релийза!")
-                return False, CURRENT_APP_VERSION, "", ""
-                
-            log_message("Намерен е ъпдейт!")
-            return True, server_version, download_url, release_notes
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            tag_name = data.get("tag_name", "0.0.0")
+            server_version = tag_name.lstrip('v')
+            release_notes = data.get("body", "")
             
+            # Намираме asset-а (инсталатора)
+            assets = data.get("assets", [])
+            download_url = ""
+            for asset in assets:
+                if asset.get("name") == "ContractsApp_Setup.exe":
+                    download_url = asset.get("url")
+                    break
+            
+            log_message(f"Версия от GitHub API: {server_version}")
+            
+            if server_version > CURRENT_APP_VERSION:
+                if not download_url:
+                    log_message("ГРЕШКА: Намерен е ъпдейт, но липсва инсталатор в релийза!")
+                    return False, CURRENT_APP_VERSION, "", ""
+                return True, server_version, download_url, release_notes
+        
         log_message("Няма нова версия.")
         return False, CURRENT_APP_VERSION, "", "Имате най-новата версия."
         
     except Exception as e:
-        log_message(f"КРИТИЧНА ГРЕШКА API: {str(e)}")
-        import traceback
-        log_message(traceback.format_exc())
+        log_message(f"КРИТИЧНА ГРЕШКА при проверка: {str(e)}")
         return False, CURRENT_APP_VERSION, "", f"Грешка: {str(e)}"
 
-def download_and_install_update(download_url, access_token=None):
+def download_and_install_update(download_url, access_token=None, progress_callback=None):
     """
-    Изтегля инсталатора от GitHub API Asset URL.
+    Изтегля инсталатора на части (chunks) и го стартира.
+    progress_callback: функция, която приема (current_bytes, total_bytes)
     """
     import tempfile
     
-    # Решаваме къде да запазим новия .exe инсталатор
     temp_dir = tempfile.gettempdir()
     installer_path = os.path.join(temp_dir, "ContractsApp_Update_Setup.exe")
     
-    log_message(f"--- СТАРТ НА ИЗТЕГЛЯНЕ (API Asset) ---")
+    log_message(f"--- СТАРТ НА ИЗТЕГЛЯНЕ ---")
     log_message(f"Дестинация: {installer_path}")
     
     try:
@@ -103,39 +116,44 @@ def download_and_install_update(download_url, access_token=None):
         req.add_header('User-Agent', 'ContractsApp-Updater')
         
         if access_token:
-            log_message("Използва се Access Token за оторизация.")
             req.add_header('Authorization', f'token {access_token}')
-            # GitHub изисква ТОЗИ хедър, за да изпрати самия файл, а не метаданни!
             req.add_header('Accept', 'application/octet-stream') 
             
-        log_message("Свързване с GitHub API за изтегляне на файл...")
+        log_message("Свързване за изтегляне на файл...")
         with urllib.request.urlopen(req, timeout=60) as response:
-            status = response.getcode()
-            log_message(f"Статус отговор: {status}")
+            total_size = int(response.headers.get('Content-Length', 0))
+            log_message(f"Общ размер: {total_size} байта")
             
-            # Четене на съдържанието
-            content = response.read()
-            size = len(content)
-            log_message(f"Изтеглени са {size} байта.")
+            downloaded = 0
+            block_size = 8192
             
             with open(installer_path, 'wb') as out_file:
-                out_file.write(content)
-                
-        log_message("Файлът е запазен успешно.")
+                while True:
+                    buffer = response.read(block_size)
+                    if not buffer:
+                        break
+                    
+                    downloaded += len(buffer)
+                    out_file.write(buffer)
+                    
+                    if progress_callback:
+                        progress_callback(downloaded, total_size)
+                    
+            log_message(f"Изтеглени са {downloaded} байта. Успех.")
             
         log_message("Стартиране на инсталатора...")
         if os.name == 'nt':
+            # Стартираме инсталатора и излизаме
             subprocess.Popen([installer_path], shell=True)
-            log_message("subprocess.Popen() изпълнен.")
+            log_message("Инсталаторът е стартиран.")
             
-        log_message("Самоизключване на програмата за ъпдейт...")
-        time.sleep(1)
+        # Малка пауза, за да сме сигурни, че инсталаторът е поел контрола
+        time.sleep(1.5)
+        log_message("Край на процеса. Изход.")
         sys.exit(0)
         
     except Exception as e:
         log_message(f"Грешка при изтегляне/инсталиране: {str(e)}")
-        import traceback
-        log_message(traceback.format_exc())
         return False
 
 # Само за директно тестване на този файл

@@ -1,3 +1,4 @@
+from typing import Dict, Any, List
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
     QComboBox, QMessageBox, QDateEdit, QCheckBox, QLabel, QTabWidget, QWidget,
@@ -32,7 +33,6 @@ import re
 
 def get_user_auth(obj):
     """Helper to find current user in parent chain"""
-    from PyQt6.QtWidgets import QWidget
     parent = obj.parent()
     while parent:
         if hasattr(parent, 'user') and parent.user:
@@ -139,6 +139,10 @@ class AddDeviceDialog(QDialog):
         self.object_address = QLineEdit()
         self.object_phone = QLineEdit()
         
+        self.status = QComboBox()
+        self.status.addItems(["активен", "бракувана", "прекратен"])
+        self.status.setCurrentText("активен")
+        
         # Brand and Model Logic
         self.brand = QComboBox()
         self.brand.addItems(["Избери марка", "Tremol", "Daisy", "Datecs"])
@@ -183,6 +187,7 @@ class AddDeviceDialog(QDialog):
         device_layout.addRow("Име на обект:", self.object_name)
         device_layout.addRow("Адрес на обект:", self.object_address)
         device_layout.addRow("Телефон на обект:", self.object_phone)
+        device_layout.addRow("Статус:", self.status)
         device_layout.addRow("Марка:", self.brand)
         device_layout.addRow("Модел:", self.model_combo)
         device_layout.addRow("№ Свидетелство:", self.certificate_number)
@@ -427,7 +432,6 @@ class AddDeviceDialog(QDialog):
             # Prepare client data
             client_data = {
                 'contract_number': self.contract_number.text().strip(),
-                'status': self.status.currentText(),
                 'contract_start': self.contract_start.date().toString('yyyy-MM-dd'),
                 'contract_expiry': self.contract_expiry.date().toString('yyyy-MM-dd'),
                 'company_name': self.company_name.text().strip(),
@@ -477,7 +481,8 @@ class AddDeviceDialog(QDialog):
                 'nra_td': self.nra_td.currentText().strip(),
                 'bim_model': self.bim_model.text().strip(),
                 'bim_date': self.bim_date.date().toString('yyyy-MM-dd'),
-                'maintenance_price': self.maintenance_price.value()
+                'maintenance_price': self.maintenance_price.value(),
+                'status': self.status.currentText()
             }
             
             # Add to database
@@ -529,6 +534,10 @@ class AddToExistingContractDialog(QDialog):
         self.object_phone.editingFinished.connect(lambda: self.format_phone(self.object_phone))
         self.model = QLineEdit()
         
+        self.status = QComboBox()
+        self.status.addItems(["активен", "бракувана", "прекратен"])
+        self.status.setCurrentText("активен")
+        
         self.certificate_number = QComboBox()
         self.certificate_number.setEditable(True)
         self.certificate_number.currentTextChanged.connect(self.on_certificate_changed)
@@ -560,6 +569,7 @@ class AddToExistingContractDialog(QDialog):
         form.addRow("Име на обект:", self.object_name)
         form.addRow("Адрес на обект:", self.object_address)
         form.addRow("Телефон на обект:", self.object_phone)
+        form.addRow("Статус:", self.status)
         form.addRow("Модел:", self.model)
         form.addRow("№ Свидетелство:", self.certificate_number)
         form.addRow("Изтичане свидетелство:", self.certificate_expiry)
@@ -675,7 +685,8 @@ class AddToExistingContractDialog(QDialog):
                 'nra_report_month': self.nra_report_month.text().strip(),
                 'nra_td': self.nra_td.currentText().strip(),
                 'bim_model': self.bim_model.text().strip(),
-                'bim_date': self.bim_date.date().toString('yyyy-MM-dd')
+                'bim_date': self.bim_date.date().toString('yyyy-MM-dd'),
+                'status': self.status.currentText()
             }
             
             add_device(self.current_client_id, device_data)
@@ -1015,7 +1026,6 @@ class EditDeviceDialog(QDialog):
         try:
             client_data = {
                 'contract_number': self.contract_number.text().strip(),
-                'status': self.status.currentText(),
                 'contract_start': self.contract_start.date().toString('yyyy-MM-dd'),
                 'contract_expiry': self.contract_expiry.date().toString('yyyy-MM-dd'),
                 'company_name': self.company_name.text().strip(),
@@ -1045,7 +1055,8 @@ class EditDeviceDialog(QDialog):
                 'nra_td': self.nra_td.currentText().strip(),
                 'bim_model': self.bim_model.text().strip(),
                 'bim_date': self.bim_date.date().toString('yyyy-MM-dd'),
-                'maintenance_price': self.maintenance_price.value()
+                'maintenance_price': self.maintenance_price.value(),
+                'status': self.status.currentText()
             }
             
             user_id, username = get_user_auth(self)
@@ -2386,7 +2397,7 @@ class SettingsDialog(QDialog):
             os.makedirs(data_dir, exist_ok=True)
             
             # Read existing to preserve keys we don't manage here (like last_sync_time)
-            local_data = {}
+            local_data: Dict[str, Any] = {}
             settings_path = os.path.join(data_dir, "settings.json")
             if os.path.exists(settings_path):
                 import json
@@ -3335,10 +3346,6 @@ class ClientEditorDialog(QDialog):
         form = QFormLayout()
         
         self.contract_number = QLineEdit()
-        self.status = QComboBox()
-        self.status.addItems(["активен", "прекратен", "бракувана"])
-        self.status.setEditable(True)
-        
         self.company_name = QLineEdit()
         self.company_name.setPlaceholderText("Име на фирмата...")
         
@@ -3378,7 +3385,6 @@ class ClientEditorDialog(QDialog):
         form.addRow("Тел. 1:", self.phone1)
         form.addRow("Тел. 2:", self.phone2)
         form.addRow("№ Договор:", self.contract_number)
-        form.addRow("Статус:", self.status)
         form.addRow("Договор от:", self.contract_start)
         form.addRow("Изтича на:", self.contract_expiry)
         
@@ -3409,7 +3415,6 @@ class ClientEditorDialog(QDialog):
         self.phone1.setText(d.get('phone1', ''))
         self.phone2.setText(d.get('phone2', ''))
         self.contract_number.setText(d.get('contract_number', ''))
-        self.status.setCurrentText(d.get('status', 'активен'))
         
         from date_utils import db_to_qdate
         self.contract_start.setDate(db_to_qdate(d.get('contract_start')))
@@ -3472,7 +3477,6 @@ class ClientEditorDialog(QDialog):
             'phone1': self.phone1.text().strip(),
             'phone2': self.phone2.text().strip(),
             'contract_number': self.contract_number.text().strip(),
-            'status': self.status.currentText(),
             'contract_start': self.contract_start.date().toString("yyyy-MM-dd"),
             'contract_expiry': self.contract_expiry.date().toString("yyyy-MM-dd")
         }
